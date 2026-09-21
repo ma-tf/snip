@@ -1,0 +1,34 @@
+# Build outputs
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.res
+*.exp
+*.lib
+*.dll
+
+# Build directories
+build/
+out/
+bin/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.VC.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/

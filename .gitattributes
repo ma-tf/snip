@@ -1,0 +1,15 @@
+# Normalise line endings so a Windows repo doesn't churn on every checkout.
+* text=auto
+
+# MASM sources and the build scripts are read by Windows tools; keep them CRLF.
+*.asm   text eol=crlf
+*.inc   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary
+*.exe   binary
+*.obj   binary
+*.pdb   binary
+*.ilk   binary
