@@ -9,4 +9,4 @@ Blocked by: 06
 
 How do Pen, Highlighter, and Eraser work, and what does Undo undo?
 
-Decide whether annotations rasterize straight onto the DIB or live as a vector list replayed on paint; what Undo/Redo actually restores (full-image snapshots vs an operation log vs vector ops) and how deep it goes; what the Eraser erases — the last stroke, everything under the cursor, or back to the pristine snip; and how the editor hands its result to Copy and Save As.
+Decide whether annotations rasterize straight onto the DIB or live as a vector list replayed on paint; what Undo/Redo actually restores (full-image snapshots vs an operation log vs vector ops) and how deep it goes; what the Eraser erases — the last stroke, everything under the cursor, or back to the pristine snip; and how the editor hands its result to Copy and Save As — including filling and transferring the three published clipboard formats (`CF_DIBV5`, `PNG`, `CF_DIB`) decided in [Snip representation and clipboard formats](06-snip-representation-clipboard.md).
