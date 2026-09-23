@@ -32,3 +32,9 @@ desktop.ini
 # Editors
 .vscode/
 .idea/
+
+# Wayfinder workspace (local tracker — not committed)
+.scratch/
+
+# Throwaway prototypes (findings are the deliverable, not the code)
+prototypes/
