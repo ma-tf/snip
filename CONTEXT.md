@@ -6,6 +6,10 @@ A Windows Snipping Tool replica written in pure x64 MASM assembly against Win32.
 
 ### Capturing
 
+**Snipping session**:
+The span from starting a snip to the Snip landing in the Editor: the Overlay is up for its duration and the Shell is hidden.
+_Avoid_: capture, snipping run
+
 **Snip**:
 The captured region of the screen, owned as one cropped bitmap. A Snip is what the Editor annotates and what Copy and Save As publish.
 _Avoid_: screenshot, capture, grab, clip
