@@ -11,3 +11,7 @@ A capture yields the whole virtual screen, but a Snip is cropped to the Selectio
 ## Consequences
 
 The Editor's Working bitmap is byte-identical in format to what WIC wants, so Save As and Copy need no pixel conversion pass. Any future GPU compositing would have to premultiply on the way in, or supersede this ADR.
+
+## Amendment — free-form cuts
+
+For free-form snips, "alpha 255 inside the Selection, 0 outside" is refined to per-pixel **coverage**: fully opaque inside the Trace, absent outside, partially transparent along the cut, which is filled antialiased with GDI+ (`GraphicsPath` + `FillPath`). Rectangular, window and full-screen snips stay binary. The straight-BGRA rule is unchanged — only the alpha values differ.
