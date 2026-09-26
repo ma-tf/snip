@@ -14,26 +14,49 @@ no-CRT setup the project uses, so it doubles as a note on what is unusual about 
 
 | Path            | What it holds                                                     |
 | --------------- | ----------------------------------------------------------------- |
-| `src/`          | Assembly sources. Currently one: `snip.asm`.                      |
-| `build/`        | All build outputs (`snip.obj`, `snip.exe`, `snip.pdb`, `.ilk`). Gitignored. |
+| `src/`          | Assembly sources and includes: `snip.asm` (entry), `shell.asm`, and the shared `snip.inc` / `win32.inc`. New area modules join the build by landing here. |
+| `build/`        | Build outputs. `snip.exe` and the `*.obj` intermediates, plus `snip.pdb` in the debug variant; `objs.rsp` is deleted after a successful link. Gitignored. |
 | `build.cmd`     | The build loop.                                                   |
 
 ## Building
 
 ```
-build.cmd          # assemble + link
+build.cmd          # debug build: snip.exe + snip.pdb
+build.cmd size     # size build:  snip.exe, no PDB
 build.cmd clean    # delete build/
 ```
+
+Two variants, same code, differing only in debug info — both write `build\snip.exe`, so
+the run path never changes:
+
+| Variant         | Link flag     | Output                     | Size      |
+| --------------- | ------------- | -------------------------- | --------- |
+| `debug` (default) | `/debug`    | `snip.exe` + `snip.pdb`    | 6,144 B   |
+| `size`          | `/debug:none` | `snip.exe`                 | 6,144 B   |
+
+The two variants are the same size at the moment: the debug directory (`RSDS` record +
+type info) fits inside the `.rdata` block's slack, so it costs no extra block. When
+`.rdata` grows past the next 512-byte boundary, `debug` will cost a block more than
+`size`. Use `debug` while working in WinDbg and `size` when you want the leanest
+artifact. `build.cmd size clean` cleans first and then builds; a bare `build.cmd clean`
+only cleans.
 
 Under the hood:
 
 ```
-ml64 /nologo /c /Zi /Fo build\snip.obj src\snip.asm
+for each src\*.asm:
+    ml64 /nologo /c /Zi /I src /Fo build\<name>.obj src\<name>.asm
+    append build\<name>.obj to build\objs.rsp
+
 link /nologo /machine:x64 /subsystem:windows /entry:WinMainASM /nodefaultlib ^
-     /debug /out:build\snip.exe build\snip.obj kernel32.lib user32.lib gdi32.lib
+     /incremental:no /opt:ref /opt:icf /release /merge:.pdata=.rdata ^
+     /debug /out:build\snip.exe @build\objs.rsp ^
+     kernel32.lib user32.lib gdi32.lib comctl32.lib
 ```
 
-Three things to know about those lines:
+(That is the `debug` variant; `size` swaps `/debug` for `/debug:none`.)
+
+Seven things to know about those lines:
 
 - **No CRT.** `/subsystem:windows` defaults the entry symbol to `WinMainCRTStartup`; with no
   C runtime linked, that symbol does not exist. We `PUBLIC` our own entry and name it with
@@ -42,10 +65,27 @@ Three things to know about those lines:
   `VC\Auxiliary\Build\vcvars64.bat` and `call`s it, so `ml64`/`link` arrive via `PATH` and the
   SDK import libraries via `LIB`. That is why there are no `/libpath` switches here: pinning
   those to a specific SDK version is what breaks on the next upgrade.
+- **The source list is globbed.** Every `src\*.asm` is assembled and the object paths go into
+  `build\objs.rsp`, which `link` reads with `@`. Adding an area module means adding a file, not
+  editing this script. `/I src` is what lets a source say `include snip.inc`.
+- **The link strips and tidies.** `/incremental:no` drops the incremental link table and its
+  `0xCC` padding; `/opt:ref` and `/opt:icf` drop unreferenced and duplicate code; `/release`
+  sets the PE checksum. Without them `link` defaults to incremental, which pads `.text` by
+  several kilobytes and leaves a `snip.ilk` behind — an executable whose size says nothing
+  about how much it does.
+- **Sections are packed.** `/merge:.pdata=.rdata` folds the unwind section into the read-only
+  data section, so the image carries one fewer 512-byte block. `.pdata` is read-only too, so
+  nothing is lost: the exception directory still points at the merged copy and WinDbg still
+  unwinds.
 - **`/Zi` + `/debug`.** Assemble with `/Zi` and link with `/debug` to emit `build\snip.pdb`.
+  The `size` variant links `/debug:none` instead and deletes any stale PDB.
+- **`comctl32.lib` is for ComboBoxEx.** The Shell's two drop-downs are `ComboBoxEx32`, not
+  `ComboBox`, so the module links `comctl32` and registers the class with
+  `InitCommonControlsEx(ICC_USEREX_CLASSES)` at process init. See `docs/shell.md`.
 
-`snip.exe` opens a window titled `Snipping Tool (asm)` and exits with code 0 when the window
-is closed (`WM_DESTROY` → `PostQuitMessage(0)`).
+`snip.exe` opens a window titled `Snipping Tool` with three stock controls — a New button, a
+mode drop-down, and a Delay drop-down, each row of which carries a small icon — and exits with
+code 0 when the window is closed (`WM_DESTROY` → `PostQuitMessage(0)`).
 
 ## Debugging
 
@@ -82,6 +122,8 @@ wrong, and a crash inside it will not unwind cleanly.
 
 ## Gotchas observed
 
-- `link /debug` without `/RELEASE` leaves the PE checksum unset, so cdb prints
-  `WARNING: Unable to verify checksum for snip.exe` on launch. Harmless; symbols load anyway.
+- `/release` sets the PE checksum (so cdb no longer warns) and clears `/incremental`; the `.ilk`
+  and the `0xCC` padding both disappear with it.
+- The exe has no `.reloc` section: nothing carries a static absolute address. Add a pointer
+  table in `.data` and one reappears — the loader then needs it to rebase under ASLR.
 - `ml64` prints `Assembling: <path>` to stdout even with `/nologo`.
