@@ -52,8 +52,17 @@ rasterisation) and stamped in by `ovl_blit_opaque`.
 **Geometry is the virtual screen, re-read every show.** `SM_*VIRTUALSCREEN`
 returns the bounding box of every monitor and *can be negative* — a monitor left
 of the primary gives a negative `x`. That origin is used both as the window
-position and as the DIB's origin, so a Selection's screen coordinates are also
-its DIB coordinates.
+position and as the DIB's origin, so a Selection's client coordinates are also
+its DIB coordinates; the one conversion to screen pixels happens at the
+session→Snip boundary (see [`docs/multimonitor.md`](multimonitor.md)). The
+metrics are read afresh on every `overlay_show`, never cached at startup, and the
+DIB is rebuilt if its size no longer matches.
+
+**Chrome scales with the effective DPI.** The Overlay has one effective DPI at a
+time (the monitor it is mainly on). `overlay_show` reads it with
+`GetDpiForWindow`, `WM_DPICHANGED` updates it, and `ovl_readout` scales the
+plate's offset, size, insets, and font by that factor. The outline does not
+scale: it is one physical pixel by design.
 
 **Self-exclusion is set once.** `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`
 after creation keeps the dim and chrome out of every capture, including our own
@@ -89,6 +98,7 @@ window, not of a frame, so it is set once and never touched again.
 ## See also
 
 - [`docs/select.md`](select.md) — the Selection state machine that drives it.
+- [`docs/multimonitor.md`](multimonitor.md) — the coordinate spaces and DPI rules.
 - [`docs/research/overlay-selection-hit-testing.md`](research/overlay-selection-hit-testing.md)
   — the research this render path comes from.
 - [`docs/adr/0001-snip-representation.md`](adr/0001-snip-representation.md) —

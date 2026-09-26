@@ -21,6 +21,7 @@ WIN32_INC EQU 1
 ; ---------------------------------------------------------------------------
 GetModuleHandleW PROTO STDCALL :DWORD
 ExitProcess      PROTO STDCALL :DWORD
+MulDiv           PROTO STDCALL :SDWORD, :SDWORD, :SDWORD   ; rounded scale, for DPI chrome
 
 ; ---------------------------------------------------------------------------
 ; user32
@@ -56,6 +57,7 @@ EndPaint                      PROTO STDCALL :DWORD, :DWORD
 AdjustWindowRect              PROTO STDCALL :DWORD, :DWORD, :DWORD
 MonitorFromRect               PROTO STDCALL :DWORD, :DWORD
 GetMonitorInfoW               PROTO STDCALL :DWORD, :DWORD
+GetDpiForWindow               PROTO STDCALL :DWORD   ; the Overlay's effective DPI
 
 ; ---------------------------------------------------------------------------
 ; gdi32
@@ -76,6 +78,7 @@ SetTextColor       PROTO STDCALL :DWORD, :DWORD
 GetClientRect      PROTO STDCALL :DWORD, :DWORD
 GdiFlush           PROTO STDCALL
 DrawTextW          PROTO STDCALL :DWORD, :DWORD, :SDWORD, :DWORD, :DWORD
+CreateFontW        PROTO STDCALL :SDWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 BitBlt             PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD, :SDWORD, :SDWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
@@ -121,6 +124,7 @@ WM_DESTROY          EQU 0002h
 WM_PAINT            EQU 000Fh
 WM_CLOSE            EQU 0010h
 WM_ERASEBKGND       EQU 0014h
+WM_DISPLAYCHANGE    EQU 007Eh          ; a monitor was added, removed, or re-scaled
 WM_KEYDOWN          EQU 0100h
 WM_MOUSEMOVE        EQU 0200h
 WM_LBUTTONDOWN      EQU 0201h
@@ -128,6 +132,7 @@ WM_LBUTTONUP        EQU 0202h
 WM_RBUTTONUP        EQU 0205h
 WM_COMMAND          EQU 0111h
 WM_SETFONT          EQU 0030h
+WM_DPICHANGED       EQU 02E0h          ; the window's effective DPI changed
 
 BN_CLICKED          EQU 0
 CBN_SELCHANGE       EQU 1
@@ -188,6 +193,13 @@ DWM_CLOAKED         EQU 14             ; DWMWA_CLOAKED
 GWLP_USERDATA       EQU -21
 
 VK_ESCAPE           EQU 1Bh
+
+; CreateFontW: the readout plate's font is built per effective DPI.
+FW_NORMAL           EQU 400
+DEFAULT_CHARSET     EQU 1
+OUT_DEFAULT_PRECIS  EQU 0
+CLIP_DEFAULT_PRECIS EQU 0
+CLEARTYPE_QUALITY   EQU 5
 
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 EQU -4
 

@@ -80,10 +80,21 @@ land the Editor's own pixels in the Snip. Between the hide and the restore,
 - **`dib_crop` runs before `sel_restore`, never after.** The capture must happen
   while the Shell and Editor are hidden. `dib_crop` is atomic, so a failed
   capture leaves the previous Snip (and the Editor showing it) intact.
+- **The Selection is virtual-relative until the handoff.** Pointer messages carry
+  the Overlay's client coordinates, whose origin is the virtual-screen origin, not
+  the desktop's. `select_finish` adds the virtual origin exactly once, so capture
+  and the Editor are in screen pixels. See [`docs/multimonitor.md`](multimonitor.md).
+- **`WM_DISPLAYCHANGE` aborts a live session.** A monitor added, removed, or
+  re-scaled invalidates the rectangle the user is dragging; the session is
+  cancelled rather than cropped against a stale virtual screen.
+- **`WM_DPICHANGED` is chrome, not geometry.** The Overlay keeps spanning the
+  virtual screen; the suggested `lParam` rectangle is ignored. The new DPI is
+  recorded and the frame repainted with rescaled chrome.
 
 ## See also
 
 - [`docs/overlay.md`](overlay.md) — the surface this drives.
+- [`docs/multimonitor.md`](multimonitor.md) — coordinate spaces and the topology/DPI rules.
 - [`docs/capture.md`](capture.md) — what `select_finish` hands the Selection to.
 - [`CONTEXT.md`](../CONTEXT.md) — *Selection*, *Snipping session*, *Overlay*.
 - [Ticket 02](../.scratch/asm-snip-build/issues/02-overlay-rectangular-selection.md).

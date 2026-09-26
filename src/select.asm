@@ -13,7 +13,12 @@
 ;
 ; The live state is module-private: a session is a singleton, like the Shell.
 ; When the Selection completes, select_finish drives the handoff: the Selection
-; is cropped into a Snip (dib.asm) and the Editor opens (editor.asm).
+; is translated from the Overlay's client space to screen pixels, cropped into a
+; Snip (dib.asm), and shown (editor.asm).
+;
+; Two desktop changes matter here. WM_DISPLAYCHANGE during a session aborts it -
+; a Snip cropped against a stale virtual screen would be clipped or wrong.
+; WM_DPICHANGED re-lays-out the Overlay's chrome (overlay.asm owns the scaling).
 ;
 ; See docs/select.md.
 
@@ -49,9 +54,11 @@ sel_app    DWORD ?          ; App *, for the duration of the session
 sel_live   DWORD ?          ; 1 while a session is in flight, else 0
 sel_down   DWORD ?          ; 1 while the left button is held
 sel_mode   DWORD ?          ; the mode the session was started with
-sel_origin Pt <>            ; where the drag was pressed, in screen pixels
-sel_cur    Pt <>            ; where the pointer is now, in screen pixels
-sel_rect   Rect <>          ; the Selection so far
+sel_vx     SDWORD ?         ; the virtual-screen origin, read at session start
+sel_vy     SDWORD ?
+sel_origin Pt <>            ; where the drag was pressed, in Overlay client pixels
+sel_cur    Pt <>            ; where the pointer is now, in Overlay client pixels
+sel_rect   Rect <>          ; the Selection so far, in Overlay client pixels
 
 .code
 
@@ -76,6 +83,14 @@ select_begin PROC USES ebx esi edi app:DWORD
     mov  sel_rect.top, 0
     mov  sel_rect.right, 0
     mov  sel_rect.bottom, 0
+
+    ; The Overlay's client space *is* the virtual screen, so the pointer's client
+    ; coordinates are virtual-relative. The origin is read fresh here, at session
+    ; start - never cached from process startup - and applied once at the handoff.
+    INVOKE GetSystemMetrics, SM_XVIRTUALSCREEN
+    mov  sel_vx, eax
+    INVOKE GetSystemMetrics, SM_YVIRTUALSCREEN
+    mov  sel_vy, eax
 
     mov  sel_app, esi
 
@@ -114,9 +129,10 @@ sb_fail_done:
 select_begin ENDP
 
 ; ---------------------------------------------------------------------------
-; sel_ldown(lParam) - the left button went down on the Overlay (screen coords
-; in lParam). Anchors the drag and captures the mouse so it keeps tracking when
-; the pointer leaves the Overlay.
+; sel_ldown(lParam) - the left button went down on the Overlay (client coords in
+; lParam; the Overlay's client origin is the virtual-screen origin). Anchors the
+; drag and captures the mouse so it keeps tracking when the pointer leaves the
+; Overlay.
 ;
 ; lParam is parsed into memory BEFORE SetCapture: on x86 INVOKE pushes it, so
 ; the x64 volatile-register trap does not exist here, but reading it first is
@@ -208,8 +224,14 @@ su_done:
 sel_lup ENDP
 
 ; ---------------------------------------------------------------------------
-; select_finish - the Selection is complete. Crop it into a Snip and hand it to
-; the Editor, then end the session.
+; select_finish - the Selection is complete. Translate it to screen pixels, crop
+; it into a Snip, hand it to the Editor, then end the session.
+;
+; The Overlay's client space is virtual-relative; the capture path and the
+; Editor work in screen pixels, so the virtual origin is added here - once, at
+; the boundary (research: "Convert once, at the boundary"). On a single monitor
+; at (0,0) the two spaces coincide; on a monitor left of the primary they do not,
+; and without this the Snip would be blitted from the wrong place.
 ;
 ; Order matters. The capture must happen while the Shell and Editor are still
 ; hidden (they were hidden at begin), or a re-shown window could land in the
@@ -217,9 +239,20 @@ sel_lup ENDP
 ; the Editor showing it - intact; the visible error surface is ticket 11.
 ; ---------------------------------------------------------------------------
 select_finish PROC USES ebx esi
+    cmp  sel_live, 0
+    je   sf_off
+
     mov  esi, sel_app
     test esi, esi
     jz   sf_off
+
+    ; virtual-relative -> screen pixels, inclusive bounds and all
+    mov  eax, sel_vx
+    add  sel_rect.left, eax
+    add  sel_rect.right, eax
+    mov  eax, sel_vy
+    add  sel_rect.top, eax
+    add  sel_rect.bottom, eax
 
     INVOKE dib_crop, ADDR sel_rect
     mov  ebx, eax
@@ -297,6 +330,10 @@ sel_wndproc PROC hwnd:DWORD, msg:DWORD, wParam:DWORD, lParam:DWORD
     je   sw_cancel
     cmp  eax, WM_KEYDOWN
     je   sw_key
+    cmp  eax, WM_DISPLAYCHANGE
+    je   sw_display
+    cmp  eax, WM_DPICHANGED
+    je   sw_dpi
 
 sw_default:
     INVOKE DefWindowProcW, hwnd, msg, wParam, lParam
@@ -326,6 +363,32 @@ sw_key:
     cmp  wParam, VK_ESCAPE
     jne  sw_default
     INVOKE select_cancel
+    xor  eax, eax
+    ret
+
+; A monitor was added, removed, or re-scaled mid-session. The Selection was made
+; against the old virtual screen, so a crop now could be clipped or stale; abort
+; the session instead. Geometry is not cached, so the next session's
+; overlay_show re-reads it.
+sw_display:
+    cmp  sel_live, 0
+    je   sw_display_done
+    INVOKE select_cancel
+sw_display_done:
+    xor  eax, eax
+    ret
+
+; The Overlay's effective DPI changed. The window still spans the virtual screen
+; - the suggested rectangle in lParam is ignored on purpose - but the readout
+; chrome must be laid out for the new scale. overlay.asm owns that.
+sw_dpi:
+    mov  eax, wParam
+    movzx eax, ax                 ; LOWORD(wParam) is the new DPI
+    INVOKE overlay_set_dpi, eax
+    cmp  sel_live, 0
+    je   sw_dpi_done
+    INVOKE sel_repaint
+sw_dpi_done:
     xor  eax, eax
     ret
 sel_wndproc ENDP

@@ -30,13 +30,14 @@ which remains Win32-free — `dib.asm` is only the impure DIB plumbing around it
 ## How it works
 
 **The Selection is blitted straight into the Snip.** There is no full-screen
-capture and no crop pass. `capture_screen` reads the Selection's screen
+capture and no crop pass. `capture_region` reads the Selection's screen
 coordinates and does one `BitBlt(dst, 0, 0, w, h, screen, sel.left, sel.top,
-SRCCOPY | CAPTUREBLT)` into the Snip's own bitmap. Virtual-screen pixels *are*
-screen-DC coordinates — negative origins included — so the two line up with no
-arithmetic, and the ~30 MB intermediate a blit-then-crop would hold never exists.
-That is a refinement of ADR-0001, not a reversal: a Snip still owns its pixels
-outright.
+SRCCOPY | CAPTUREBLT)` into the Snip's own bitmap. The Rect arrives already in
+screen pixels — `select_finish` added the virtual-screen origin once, at the
+boundary (see [`docs/multimonitor.md`](multimonitor.md)) — and negative source
+coordinates are accepted, so the source rectangle lines up with no arithmetic and
+the ~30 MB intermediate a blit-then-crop would hold never exists. That is a
+refinement of ADR-0001, not a reversal: a Snip still owns its pixels outright.
 
 **The width is inclusive.** A drag from (100,100) to (500,400) is a 401×301
 snip, not 400×300. `geo_width`/`geo_height` return the span, and `dib_crop` adds
@@ -104,4 +105,5 @@ top-left corner shows. Scaling would misrepresent what Copy will publish.
 - [`docs/research/capture-dpi-multimonitor.md`](research/capture-dpi-multimonitor.md)
   — the capture and DPI research this path follows.
 - [`docs/select.md`](select.md) — the session lifecycle that calls in here.
+- [`docs/multimonitor.md`](multimonitor.md) — the coordinate spaces and DPI rules.
 - [Ticket 03](../.scratch/asm-snip-build/issues/03-snip-crop-editor-window.md).

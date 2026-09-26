@@ -28,6 +28,7 @@ include win32.inc
 PUBLIC overlay_show
 PUBLIC overlay_hide
 PUBLIC overlay_repaint
+PUBLIC overlay_set_dpi
 
 ; Forward declarations so INVOKE reaches them.
 ovl_register    PROTO STDCALL :DWORD          ; BOOL ovl_register(App *app)
@@ -66,6 +67,9 @@ ovl_title     DW 'S','n','i','p','p','i','n','g',' ','T','o','o','l',0
 ; "W x H", the live readout. %u is the natural fit for a non-negative size.
 fmt_wh        DW '%','u',' ','x',' ','%','u',0
 
+; The readout plate's face; CreateFontW is asked for it at the effective DPI.
+face_ui       DW 'S','e','g','o','e',' ','U','I',0
+
 .data?
 ovl_app       DWORD ?          ; App *, for the session's duration
 ovl_wc        WNDCLASSEXW <>
@@ -77,6 +81,7 @@ ovl_dc        DWORD ?          ; the memory DC the DIB is selected into
 ovl_scr       DWORD ?          ; the screen DC, held for the DIB's lifetime
 ovl_oldbm     DWORD ?          ; what was selected in ovl_dc before the DIB
 plate_rc      RECT <>          ; the plate's text rectangle, for DrawTextW
+ovl_dpi       DWORD ?          ; the Overlay's effective DPI; chrome is scaled to it
 ovl_vx        SDWORD ?         ; virtual-screen origin and size, read once per show
 ovl_vy        SDWORD ?
 ovl_vw        SDWORD ?
@@ -128,6 +133,15 @@ overlay_show PROC USES ebx esi edx app:DWORD, mode:DWORD
 os_have:
     ; The window may need repositioning: monitors come and go between sessions.
     mov  ebx, [esi].App.hwndOverlay
+
+    ; The effective DPI scales the chrome. Read it fresh every show (never cached
+    ; from startup), so a monitor or scale change is picked up. 0 means the OS is
+    ; too old for GetDpiForWindow; keep the last value or fall back to 96.
+    INVOKE GetDpiForWindow, ebx
+    test eax, eax
+    jz   os_dpi_ok
+    mov  ovl_dpi, eax
+os_dpi_ok:
     INVOKE MoveWindow, ebx, ovl_vx, ovl_vy, ovl_vw, ovl_vh, 1
 
     ; The presentation DIB is sized to the virtual screen, so a topology change
@@ -159,6 +173,21 @@ overlay_hide PROC app:DWORD
 oh_done:
     ret
 overlay_hide ENDP
+
+; ---------------------------------------------------------------------------
+; overlay_set_dpi(DWORD dpi) - record a new effective DPI from WM_DPICHANGED.
+; The chrome is scaled when it is next drawn (sel calls overlay_repaint), so
+; this is just bookkeeping. 0 falls back to 96 so the scale maths is never 0.
+; ---------------------------------------------------------------------------
+overlay_set_dpi PROC dpi:DWORD
+    mov  eax, dpi
+    test eax, eax
+    jnz  osd_ok
+    mov  eax, 96
+osd_ok:
+    mov  ovl_dpi, eax
+    ret
+overlay_set_dpi ENDP
 
 ; ---------------------------------------------------------------------------
 ; overlay_repaint(App *app, Rect *sel, DWORD down) - redraw and present one
@@ -617,8 +646,12 @@ ovl_readout PROC USES ebx esi edi ecx edx sel:DWORD
     LOCAL plateH:DWORD
     LOCAL txtW:DWORD
     LOCAL txtH:DWORD
+    LOCAL dpi:DWORD
+    LOCAL hfont:DWORD
+    LOCAL oldfont:DWORD
 
     mov  ebx, sel
+    mov  hfont, 0
 
     ; wsprintfW(buf, "%u x %u", w, h). The two values are read into locals
     ; first: the C-varargs call sets up its own arguments, so passing live
@@ -629,15 +662,29 @@ ovl_readout PROC USES ebx esi edi ecx edx sel:DWORD
     mov  txtH, eax
     INVOKE wsprintfW, ADDR buf, OFFSET fmt_wh, txtW, txtH
 
-    ; --- plate geometry: 2px in from the Selection's corner -----------------
-    mov  plateL, 2
+    ; --- chrome scale: 96 DPI is 1.0x, and every chrome dimension follows ------
+    mov  eax, ovl_dpi
+    test eax, eax
+    jnz  or_dpi_ok
+    mov  eax, 96
+or_dpi_ok:
+    mov  dpi, eax
+
+    ; --- plate geometry: 2px in from the Selection's corner, scaled ---------
+    INVOKE MulDiv, 2, dpi, 96
+    mov  ecx, eax
     mov  eax, [ebx].Rect.left
-    add  plateL, eax
-    mov  plateT, 2
+    add  eax, ecx
+    mov  plateL, eax
+    INVOKE MulDiv, 2, dpi, 96
+    mov  ecx, eax
     mov  eax, [ebx].Rect.top
-    add  plateT, eax
-    mov  plateW, 84
-    mov  plateH, 22
+    add  eax, ecx
+    mov  plateT, eax
+    INVOKE MulDiv, 84, dpi, 96
+    mov  plateW, eax
+    INVOKE MulDiv, 22, dpi, 96
+    mov  plateH, eax
 
     ; --- render the plate into a scratch DIB -------------------------------
     INVOKE GetDC, 0
@@ -665,18 +712,30 @@ ovl_readout PROC USES ebx esi edi ecx edx sel:DWORD
     INVOKE SelectObject, hdcMem, hdib
     mov  oldbm, eax
 
-    ; opaque black background, white text
+    ; opaque black background, then a font built for the effective DPI
     INVOKE ovl_fill_box, bits, plateW, plateH
-    INVOKE GetStockObject, DEFAULT_GUI_FONT
+
+    ; 9pt at 96 DPI, scaled; CreateFontW height is in pixels and negative means
+    ; "character height", not cell height.
+    INVOKE MulDiv, 9, dpi, 72
+    neg  eax
+    INVOKE CreateFontW, eax, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, OFFSET face_ui
+    mov  hfont, eax
+    test eax, eax
+    jz   or_no_font
     INVOKE SelectObject, hdcMem, eax
+    mov  oldfont, eax
+or_no_font:
     INVOKE SetBkMode, hdcMem, TRANSPARENT_BK
     INVOKE SetTextColor, hdcMem, 0FFFFFFh
 
-    ; the text rectangle: the whole plate, 4px in, so DrawTextW lays the text out
-    mov  plate_rc.left, 4
-    mov  plate_rc.top, 3
+    ; the text rectangle: the whole plate, inset by a scaled 4px/3px
+    INVOKE MulDiv, 4, dpi, 96
+    mov  plate_rc.left, eax
+    INVOKE MulDiv, 3, dpi, 96
+    mov  plate_rc.top, eax
     mov  eax, plateW
-    sub  eax, 4
+    sub  eax, plate_rc.left
     mov  plate_rc.right, eax
     mov  eax, plateH
     mov  plate_rc.bottom, eax
@@ -689,6 +748,11 @@ ovl_readout PROC USES ebx esi edi ecx edx sel:DWORD
     INVOKE ovl_blit_opaque, bits, plateL, plateT, plateW, plateH
 
     ; --- tidy up ------------------------------------------------------------
+    cmp  hfont, 0
+    jz   or_keep_font
+    INVOKE SelectObject, hdcMem, oldfont
+    INVOKE DeleteObject, hfont
+or_keep_font:
     INVOKE SelectObject, hdcMem, oldbm
     INVOKE DeleteObject, hdib
     INVOKE DeleteDC, hdcMem

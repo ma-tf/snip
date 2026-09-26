@@ -85,6 +85,12 @@ Editor. The capture happens while both our windows are hidden, so neither lands 
 the region blit means no full-screen buffer is ever held. See
 [`docs/capture.md`](capture.md).
 
+**The desktop is not one monitor at (0,0).** A Selection is virtual-relative — the
+Overlay's client space — and `select_finish` adds the virtual-screen origin once, at the
+boundary, so capture and the Editor work in screen pixels. Geometry is read fresh every
+session and never cached; a `WM_DISPLAYCHANGE` mid-session aborts it, and `WM_DPICHANGED`
+rescales the Overlay's chrome. See [`docs/multimonitor.md`](multimonitor.md).
+
 **Returns.** `eax` 0/nonzero for our own functions; Win32 `BOOL`/`HRESULT` values pass through
 untouched.
 
@@ -119,6 +125,8 @@ the build at ~5.5 KB linked, and what keeps Crinkler's `size` build near 1.5 KB;
 - [The Selection](select.md) — the Snipping session and the drag state machine.
 - [The Snip and the capture path](capture.md) — the region blit, alpha synthesis, and the
   Editor window.
+- [DPI and multi-monitor](multimonitor.md) — coordinate spaces, the re-read rules, and the
+  Overlay's DPI-scaled chrome.
 - [`CONTEXT.md`](../CONTEXT.md) — the vocabulary the code and the tickets share.
 - [`docs/adr/`](adr/) — the decisions that are expensive to reverse.
 - [Ticket 01](../.scratch/asm-snip-build/issues/01-multi-module-build-shell.md) — the module

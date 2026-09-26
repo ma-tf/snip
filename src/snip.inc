@@ -31,6 +31,12 @@ App ENDS
 ; Rect - a Selection in virtual-screen physical pixels. left/top/right/bottom
 ; is the standing convention throughout; geometry.asm normalises and measures
 ; it. Mirrors the SDK RECT but is ours: geometry.asm must not need win32.inc.
+;
+; "Virtual-screen" here means the Overlay's client space: (0,0) is the
+; virtual-screen origin, so a monitor left of / above the primary gives negative
+; values. The Overlay draws the Selection in this space directly. Only the
+; session->Snip boundary converts: select_finish adds the virtual origin before
+; handing the Rect on, so capture and the Editor work in screen pixels.
 ; ---------------------------------------------------------------------------
 Rect STRUCT
     left    SDWORD ?
@@ -93,6 +99,7 @@ shell_create PROTO STDCALL :DWORD   ; HWND shell_create(App *app) - see shell.as
 overlay_show    PROTO STDCALL :DWORD, :DWORD        ; BOOL overlay_show(App *app, DWORD mode)
 overlay_hide    PROTO STDCALL :DWORD                ; void overlay_hide(App *app)
 overlay_repaint PROTO STDCALL :DWORD, :DWORD, :DWORD  ; void overlay_repaint(App *app, Rect *sel, DWORD down)
+overlay_set_dpi PROTO STDCALL :DWORD                ; void overlay_set_dpi(DWORD dpi) - re-lay-out chrome
 
 ; select.asm - the Selection state machine and its session lifecycle.
 select_begin  PROTO STDCALL :DWORD  ; BOOL select_begin(App *app) - New was clicked
@@ -111,11 +118,14 @@ geo_height    PROTO STDCALL :DWORD                  ; SDWORD geo_height(Rect *r)
 ; capture.asm - screen capture. Ticket 03 blits the Selection's region straight
 ; from the screen DC into a caller's bitmap; ticket 08 adds the PrintWindow path
 ; for window mode. It owns no state between calls.
+;
+; The Rect arrives in SCREEN physical pixels - the caller has already added the
+; virtual-screen origin - so capture never assumes the desktop starts at (0,0).
 capture_region PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; BOOL capture_region(Rect *sel, DWORD hdcDst, DWORD w, DWORD h)
 
 ; dib.asm - the Snip: ownership, alpha synthesis, and the Pristine twin. The
 ; crop maths stays in geometry.asm; this module is the impure DIB plumbing.
-dib_crop PROTO STDCALL :DWORD   ; BOOL dib_crop(Rect *sel) - atomic: a failure keeps the old Snip
+dib_crop PROTO STDCALL :DWORD   ; BOOL dib_crop(Rect *sel) - SCREEN pixels; atomic: a failure keeps the old Snip
 dib_snip PROTO STDCALL          ; Snip *dib_snip(void)
 
 ; editor.asm - the Editor window. Created once, resized and reused per Snip.
