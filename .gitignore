@@ -8,6 +8,9 @@
 *.lib
 *.dll
 
+# The vendored compressing linker is a build tool, not a build output.
+!tools/crinkler.exe
+
 # Build directories
 build/
 out/

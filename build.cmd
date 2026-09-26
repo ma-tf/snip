@@ -4,30 +4,30 @@ rem build.cmd - assemble and link snip.exe
 rem
 rem Usage:  build.cmd [debug|size] [clean]
 rem
-rem Finds the MSVC toolchain with vswhere, calls vcvars64.bat so ml64/link and
-rem the SDK import libraries are on PATH/LIB, then assembles every src\*.asm into
-rem build\<name>.obj and links them all into build\snip.exe. A new area module
-rem joins the program simply by landing in src\ - there is no list to edit.
+rem Finds the MSVC x86 toolchain with vswhere, calls vcvars32.bat so ml/link and
+rem the 32-bit SDK import libraries are on PATH/LIB, then assembles every
+rem src\*.asm into build\<name>.obj and links them all into build\snip.exe. A new
+rem area module joins the program simply by landing in src\ - there is no list
+rem to edit.
 rem
-rem Two variants differ only in debug info:
-rem   debug (default)  /debug      -> snip.exe + snip.pdb    4,608 bytes
-rem   size             /debug:none -> snip.exe, no snip.pdb  4,096 bytes
-rem Both write build\snip.exe, so the run path never changes. See docs/build.md.
+rem Two variants:
+rem   debug (default)  link /debug      -> snip.exe + snip.pdb   4096 bytes
+rem   size             Crinkler         -> snip.exe alone         1038 bytes
+rem Both write build\snip.exe, so the run path never changes. The size variant
+rem is compressed by the vendored tools\crinkler.exe; it is NOT debuggable - no
+rem PDB, no symbols. See docs/build.md and docs/adr/0002-x86-for-crinkler.md.
 rem
-rem Sources are pure MASM x64. /nodefaultlib + our own /entry: keep the CRT out.
+rem Sources are pure MASM x86. /nodefaultlib + our own /entry: keep the CRT out.
 rem ===========================================================================
 setlocal
 
 set "ROOT=%~dp0"
 set "SRC=%ROOT%src"
 set "OUT=%ROOT%build"
+set "CRINKLER=%ROOT%tools\crinkler.exe"
 
 rem --- variant ---------------------------------------------------------------
-rem debug (default) keeps the PDB and the RSDS path WinDbg loads automatically.
-rem size drops it: no debug directory, and (with .pdata merged into .rdata and
-rem .data moved to .bss) the image is one 512-byte block smaller.
 set "MODE=debug"
-set "LINKDEBUG=/debug"
 
 rem "clean" on its own deletes build\ and stops, as before.
 if /I "%~1"=="clean" (
@@ -38,7 +38,7 @@ if /I "%~1"=="clean" (
 
 rem Optional mode, then an optional "clean" that also rebuilds.
 if /I "%~1"=="debug" shift
-if /I "%~1"=="size"  ( set "MODE=size" & set "LINKDEBUG=/debug:none" & shift )
+if /I "%~1"=="size"  ( set "MODE=size" & shift )
 if /I "%~1"=="clean" (
     if exist "%OUT%" rmdir /s /q "%OUT%"
     echo cleaned %OUT%
@@ -46,53 +46,77 @@ if /I "%~1"=="clean" (
 
 if not exist "%OUT%" mkdir "%OUT%"
 
-rem --- locate vcvars64.bat ---------------------------------------------------
+rem --- locate vcvars32.bat ---------------------------------------------------
 set "VCVARS="
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if exist "%VSWHERE%" (
     for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * ^
         -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
-        -find VC\Auxiliary\Build\vcvars64.bat`) do set "VCVARS=%%i"
+        -find VC\Auxiliary\Build\vcvars32.bat`) do set "VCVARS=%%i"
 )
-if not defined VCVARS set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
+if not defined VCVARS set "VCVARS=%ProgramFiles%\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars32.bat"
 if not exist "%VCVARS%" (
-    echo error: vcvars64.bat not found. Install the MSVC x64 build tools, or edit this script.
+    echo error: vcvars32.bat not found. Install the MSVC x86 build tools, or edit this script.
     exit /b 1
 )
 
 rem vcvars prints a banner and a stray errorlevel; quiet it and ignore its code.
 call "%VCVARS%" >nul
 
+if /I "%MODE%"=="size" if not exist "%CRINKLER%" (
+    echo error: %CRINKLER% not found. The size build links with Crinkler;
+    echo        see docs/build.md. Use "build.cmd debug" for the linked build.
+    exit /b 1
+)
+
 rem --- assemble every source -------------------------------------------------
+rem /c /coff: Crinkler reads COFF objects only (ml's default x86 format is OMF).
 rem /I lets a source in src\ `include snip.inc` no matter the current directory.
 if exist "%OUT%\objs.rsp" del "%OUT%\objs.rsp"
 for %%f in ("%SRC%\*.asm") do (
-    ml64 /nologo /c /Zi /I "%SRC%" /Fo "%OUT%\%%~nf.obj" "%%~f"
+    ml /nologo /c /coff /Zi /I "%SRC%." /Fo "%OUT%\%%~nf.obj" "%%~f"
     if errorlevel 1 (
-        echo error: ml64 failed on %%~nxf
+        echo error: ml failed on %%~nxf
         exit /b 1
     )
     echo "%OUT%\%%~nf.obj">>"%OUT%\objs.rsp"
 )
 
-rem --- link ------------------------------------------------------------------
-rem The object list lives in a response file so no path is ever re-quoted by cmd.
+set "LIBS=kernel32.lib user32.lib gdi32.lib comctl32.lib"
+
+rem --- link / compress -------------------------------------------------------
+if /I "%MODE%"=="size" goto :size
+
+rem debug: the ordinary linked build, with a PDB beside the exe.
 rem /incremental:no drops the incremental-link table and its 0xCC padding (and
 rem snip.ilk); /opt:ref,/opt:icf trim unreferenced and duplicate code; /release
-rem sets the PE checksum. /merge:.pdata=.rdata folds the 512-byte unwind section
-rem into .rdata, which is also read-only, so .text stays RX and nothing is lost.
-link /nologo /machine:x64 /subsystem:windows /entry:WinMainASM /nodefaultlib ^
-    /incremental:no /opt:ref /opt:icf /release /merge:.pdata=.rdata ^
-    %LINKDEBUG% /out:"%OUT%\snip.exe" @"%OUT%\objs.rsp" ^
-    kernel32.lib user32.lib gdi32.lib comctl32.lib
+rem sets the PE checksum. The entry is WinMainASM (decorated _WinMainASM@0; the
+rem linker matches the name we give it).
+link /nologo /machine:x86 /subsystem:windows /entry:WinMainASM /nodefaultlib ^
+    /incremental:no /opt:ref /opt:icf /release ^
+    /debug /out:"%OUT%\snip.exe" @"%OUT%\objs.rsp" ^
+    %LIBS%
 if errorlevel 1 (
     echo error: link failed
     exit /b 1
 )
+goto :done
 
-rem The size build writes no PDB; drop any left by an earlier debug build.
-if /I "%MODE%"=="size" if exist "%OUT%\snip.pdb" del "%OUT%\snip.pdb"
+:size
+rem size: Crinkler replaces link. It hash-imports DLL functions and compresses
+rem the image behind a self-extracting stub, so the import table and strings
+rem cost far less. It emits no PDB. TINYHEADER is deliberately NOT used: it
+rem shrinks the file ~44 bytes but Windows Defender quarantines its output.
+"%CRINKLER%" /OUT:"%OUT%\snip.exe" /SUBSYSTEM:WINDOWS /ENTRY:WinMainASM /NODEFAULTLIB ^
+    /COMPMODE:SLOW @"%OUT%\objs.rsp" %LIBS%
+if errorlevel 1 (
+    echo error: Crinkler failed
+    exit /b 1
+)
+rem No debug info in the size build; drop any PDB left by an earlier debug build.
+if exist "%OUT%\snip.pdb" del "%OUT%\snip.pdb"
 
+:done
 rem objs.rsp is a one-shot intermediate; the next build regenerates it.
 del "%OUT%\objs.rsp" >nul 2>&1
 

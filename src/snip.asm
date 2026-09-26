@@ -1,6 +1,6 @@
 ; snip.asm
-; Snipping Tool replica in x64 MASM - entry point and one-time process init.
-; No C runtime, no CRT startup.
+; Snipping Tool replica in x86 MASM - entry point and one-time process init.
+; No C runtime, no CRT startup. Runs under WOW64 on 64-bit Windows.
 ;
 ; Build: build.cmd   (assembles every src\*.asm, links them into build\snip.exe)
 ; Run:   build\snip.exe
@@ -9,12 +9,13 @@
 ; the message pump. Capture, the overlay, the editor, and the encoder land in
 ; their own area modules on top of it.
 
+.386
+.model flat, stdcall
 option casemap:none
 
 include snip.inc
 include win32.inc
 
-; The linker needs this label for /entry:.
 PUBLIC WinMainASM
 
 ; ---------------------------------------------------------------------------
@@ -36,56 +37,41 @@ msg  MSG <>
 .code
 
 ; ---------------------------------------------------------------------------
-; WinMainASM - raw process entry. The OS calls it with RSP == 8 (mod 16); there
-; is no CRT, so we own shadow space, alignment, and the exit ourselves.
+; WinMainASM - raw process entry. stdcall, no CRT, so we own the process exit:
+; it never returns and ends in ExitProcess. The linker entry symbol is the
+; decorated _WinMainASM@0; build.cmd and Crinkler both name it WinMainASM.
 ; ---------------------------------------------------------------------------
-WinMainASM PROC FRAME
-    sub  rsp, 88h            ; 0x20 shadow + 0x60 for CreateWindowExW's stack args
-    .allocstack 88h
-    .endprolog
-
+WinMainASM PROC
     ; Per-monitor DPI awareness v2, before any window is created. Every later
-    ; ticket inherits this. A failure (already set by a manifest, say) is not
-    ; fatal here.
-    mov  rcx, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-    call SetProcessDpiAwarenessContext
+    ; ticket inherits this. A failure (already set elsewhere, say) is not fatal.
+    INVOKE SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 
     ; Register ComboBoxEx32 with comctl32, so shell.asm can create it. The
     ; Shell is the only common control the app uses; a failure is not fatal,
     ; the Shell just comes up without icons.
-    lea  rcx, icce
-    call InitCommonControlsEx
+    INVOKE InitCommonControlsEx, OFFSET icce
 
     ; hinst = GetModuleHandleW(NULL)
-    xor  ecx, ecx
-    call GetModuleHandleW
-    mov  app.hInstance, rax
+    INVOKE GetModuleHandleW, 0
+    mov  app.hInstance, eax
 
     ; shell_create(&app)
-    lea  rcx, app
-    call shell_create
-    mov  app.hwndShell, rax
-    test rax, rax
+    INVOKE shell_create, OFFSET app
+    mov  app.hwndShell, eax
+    test eax, eax
     jz   done
 
     ; Message pump
 msg_loop:
-    lea  rcx, msg
-    xor  edx, edx
-    xor  r8d, r8d
-    xor  r9d, r9d
-    call GetMessageW
+    INVOKE GetMessageW, OFFSET msg, 0, 0, 0
     test eax, eax
     jle  done                  ; 0 == WM_QUIT, -1 == error
-    lea  rcx, msg
-    call TranslateMessage
-    lea  rcx, msg
-    call DispatchMessageW
+    INVOKE TranslateMessage, OFFSET msg
+    INVOKE DispatchMessageW, OFFSET msg
     jmp  msg_loop
 
 done:
-    xor  ecx, ecx
-    call ExitProcess
+    INVOKE ExitProcess, 0
 WinMainASM ENDP
 
 END

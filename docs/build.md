@@ -1,99 +1,111 @@
 # Building and debugging `snip.exe`
 
-Short explainer for this repo's build loop and debug loop. It assumes the pure-MASM64,
-no-CRT setup the project uses, so it doubles as a note on what is unusual about it.
+Short explainer for this repo's build loop and debug loop. It assumes the pure-MASM32,
+no-CRT, x86-under-WOW64 setup the project uses, so it doubles as a note on what is unusual
+about it. The x86 target itself is explained in
+[`docs/adr/0002-x86-for-crinkler.md`](adr/0002-x86-for-crinkler.md).
 
 ## Prerequisites
 
-- Windows 11, AMD64.
-- Visual Studio 18 Community with the MSVC x64 build tools (MSVC 14.51) and a Windows SDK
-  (10.0.26100). Neither `ml64.exe` nor `link.exe` is on `PATH` by default; `build.cmd`
-  handles that.
+- Windows 11, x86-64 host (the exe runs 32-bit under WOW64).
+- Visual Studio 18 Community with the MSVC **x86** build tools and a Windows SDK. Neither
+  `ml.exe` nor `link.exe` is on `PATH` by default; `build.cmd` handles that via
+  `vcvars32.bat`.
+- `tools/crinkler.exe` — the vendored compressing linker (Crinkler 3.0b, Win32 build, Zlib
+  licence in `tools/crinkler.LICENSE.txt`). Needed for the `size` build only.
+- The machine (and any machine the compressed exe runs on) needs **SSE4.2**: Crinkler 3.0 and
+  its output require it.
 
 ## Layout
 
 | Path            | What it holds                                                     |
 | --------------- | ----------------------------------------------------------------- |
 | `src/`          | Assembly sources and includes: `snip.asm` (entry), `shell.asm`, and the shared `snip.inc` / `win32.inc`. New area modules join the build by landing here. |
-| `build/`        | Build outputs. `snip.exe` and the `*.obj` intermediates, plus `snip.pdb` in the debug variant; `objs.rsp` is deleted after a successful link. Gitignored. |
+| `build/`        | Build outputs. `snip.exe` and the `*.obj` intermediates, plus `snip.pdb` in the debug variant; `objs.rsp` is deleted after a successful build. Gitignored. |
+| `tools/`        | The vendored Crinkler executable and its licence.                  |
 | `build.cmd`     | The build loop.                                                   |
 
 ## Building
 
 ```
 build.cmd          # debug build: snip.exe + snip.pdb
-build.cmd size     # size build:  snip.exe, no PDB
+build.cmd size     # size build:  snip.exe, compressed by Crinkler, no PDB
 build.cmd clean    # delete build/
 ```
 
-Two variants, same code, differing only in debug info — both write `build\snip.exe`, so
-the run path never changes:
+Two variants, both writing `build\snip.exe`, so the run path never changes:
 
-| Variant         | Link flag     | Output                     | Size      |
-| --------------- | ------------- | -------------------------- | --------- |
-| `debug` (default) | `/debug`    | `snip.exe` + `snip.pdb`    | 6,144 B   |
-| `size`          | `/debug:none` | `snip.exe`                 | 6,144 B   |
+| Variant         | Linked by      | Output                     | Size      |
+| --------------- | -------------- | -------------------------- | --------- |
+| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 5,632 B   |
+| `size`          | Crinkler 3.0b  | `snip.exe`                 | 1,511 B   |
 
-The two variants are the same size at the moment: the debug directory (`RSDS` record +
-type info) fits inside the `.rdata` block's slack, so it costs no extra block. When
-`.rdata` grows past the next 512-byte boundary, `debug` will cost a block more than
-`size`. Use `debug` while working in WinDbg and `size` when you want the leanest
-artifact. `build.cmd size clean` cleans first and then builds; a bare `build.cmd clean`
-only cleans.
+The `size` variant is not "the debug build with the PDB removed" — it is a different linker.
+Crinkler resolves DLL imports by hash (four bytes each, instead of a full import table) and
+compresses the image behind a self-extracting stub, which is where the other ~4 KB goes.
+`build.cmd size clean` cleans first and then builds; a bare `build.cmd clean` only cleans.
 
 Under the hood:
 
 ```
 for each src\*.asm:
-    ml64 /nologo /c /Zi /I src /Fo build\<name>.obj src\<name>.asm
+    ml /nologo /c /coff /Zi /I "src." /Fo build\<name>.obj src\<name>.asm
     append build\<name>.obj to build\objs.rsp
 
-link /nologo /machine:x64 /subsystem:windows /entry:WinMainASM /nodefaultlib ^
-     /incremental:no /opt:ref /opt:icf /release /merge:.pdata=.rdata ^
-     /debug /out:build\snip.exe @build\objs.rsp ^
+rem debug
+link /nologo /machine:x86 /subsystem:windows /entry:WinMainASM /nodefaultlib ^
+     /incremental:no /opt:ref /opt:icf /release /debug ^
+     /out:build\snip.exe @build\objs.rsp ^
+     kernel32.lib user32.lib gdi32.lib comctl32.lib
+
+rem size
+tools\crinkler.exe /OUT:build\snip.exe /SUBSYSTEM:WINDOWS /ENTRY:WinMainASM /NODEFAULTLIB ^
+     /COMPMODE:SLOW @build\objs.rsp ^
      kernel32.lib user32.lib gdi32.lib comctl32.lib
 ```
 
-(That is the `debug` variant; `size` swaps `/debug` for `/debug:none`.)
-
-Seven things to know about those lines:
+Eight things to know about those lines:
 
 - **No CRT.** `/subsystem:windows` defaults the entry symbol to `WinMainCRTStartup`; with no
   C runtime linked, that symbol does not exist. We `PUBLIC` our own entry and name it with
-  `/entry:WinMainASM`. `/nodefaultlib` enforces the absence of the CRT.
+  `/entry:WinMainASM`. `/nodefaultlib` enforces the absence of the CRT, and stops Crinkler
+  from pulling in `msvcrt.dll` for us.
+- **`/c /coff` is not optional.** `ml`'s default x86 object format is OMF; Crinkler reads COFF
+  only. The plain linker accepts either, but the build uses COFF throughout.
 - **The toolchain is discovered, not hard-coded.** `build.cmd` asks `vswhere` for
-  `VC\Auxiliary\Build\vcvars64.bat` and `call`s it, so `ml64`/`link` arrive via `PATH` and the
-  SDK import libraries via `LIB`. That is why there are no `/libpath` switches here: pinning
-  those to a specific SDK version is what breaks on the next upgrade.
+  `VC\Auxiliary\Build\vcvars32.bat` and `call`s it, so `ml`/`link` arrive via `PATH` and the
+  32-bit SDK import libraries via `LIB`. That is why there are no `/libpath` switches here:
+  pinning those to a specific SDK version is what breaks on the next upgrade.
 - **The source list is globbed.** Every `src\*.asm` is assembled and the object paths go into
-  `build\objs.rsp`, which `link` reads with `@`. Adding an area module means adding a file, not
-  editing this script. `/I src` is what lets a source say `include snip.inc`.
-- **The link strips and tidies.** `/incremental:no` drops the incremental link table and its
-  `0xCC` padding; `/opt:ref` and `/opt:icf` drop unreferenced and duplicate code; `/release`
-  sets the PE checksum. Without them `link` defaults to incremental, which pads `.text` by
-  several kilobytes and leaves a `snip.ilk` behind — an executable whose size says nothing
-  about how much it does.
-- **Sections are packed.** `/merge:.pdata=.rdata` folds the unwind section into the read-only
-  data section, so the image carries one fewer 512-byte block. `.pdata` is read-only too, so
-  nothing is lost: the exception directory still points at the merged copy and WinDbg still
-  unwinds.
-- **`/Zi` + `/debug`.** Assemble with `/Zi` and link with `/debug` to emit `build\snip.pdb`.
-  The `size` variant links `/debug:none` instead and deletes any stale PDB.
+  `build\objs.rsp`, which both linkers read with `@`. Adding an area module means adding a
+  file, not editing this script.
 - **`comctl32.lib` is for ComboBoxEx.** The Shell's two drop-downs are `ComboBoxEx32`, not
-  `ComboBox`, so the module links `comctl32` and registers the class with
-  `InitCommonControlsEx(ICC_USEREX_CLASSES)` at process init. See `docs/shell.md`.
+  `ComboBox`, so the module links `comctl32` and registers the class at process init with
+  `InitCommonControlsEx(ICC_USEREX_CLASSES)`. The 16×16 row glyphs are drawn at runtime with
+  GDI into one masked image list — no icon resources, no `.rsrc`. See [`docs/shell.md`](shell.md).
+- **The debug link strips and tidies.** `/incremental:no` drops the incremental link table and
+  its `0xCC` padding; `/opt:ref` and `/opt/icf` drop unreferenced and duplicate code;
+  `/release` sets the PE checksum. Without them `link` defaults to incremental, which pads
+  `.text` by several kilobytes and leaves a `snip.ilk` behind.
+- **The size build is Crinkler.** It hash-imports the DLL functions, compresses code and data
+  as separate parts, and writes a self-contained exe. It emits no PDB, and it does **not**
+  support manifests — neither matters here, because DPI awareness is set by API call, not a
+  manifest. `TINYHEADER` is deliberately not used even though it saves ~44 bytes: Windows
+  Defender quarantines its output (measured 2026-09-26).
+- **Crinkler's Win32 build, not Win64.** A 64-bit Crinkler reads the real `System32`, finds
+  64-bit DLLs, and skips them; the 32-bit tool under WOW64 is redirected to `SysWOW64` and
+  finds the 32-bit export tables it needs. The vendored binary is the Win32 one.
 
-`snip.exe` opens a window titled `Snipping Tool` with three stock controls — a New button, a
-mode drop-down, and a Delay drop-down, each row of which carries a small icon — and exits with
-code 0 when the window is closed (`WM_DESTROY` → `PostQuitMessage(0)`).
+`snip.exe` opens a window titled `Snipping Tool` with a New button and two `ComboBoxEx`
+drop-downs — the snip mode and the delay, each row carrying a 16×16 glyph drawn at runtime —
+and exits with code 0 when the window is closed (`WM_DESTROY` → `PostQuitMessage(0)`).
 
 ## Debugging
 
 **WinDbg is the debugger.** The modern `WinDbgX` is the interactive choice; classic
 `windbg.exe` and `cdb.exe` live in
-`C:\Program Files (x86)\Windows Kits\10\Debuggers\x64`. It reads both our PDB and the
-`.pdata`/`.xdata` unwind records MASM emits from `PROC FRAME` + `.allocstack`/`.pushreg`,
-which is what makes a crash in hand-written asm debuggable at all.
+`C:\Program Files (x86)\Windows Kits\10\Debuggers\x64`. Use the **`debug`** variant: the
+`size` variant has no symbols, and Crinkler input is not worth stepping through.
 
 `cdb.exe` is the same engine on the command line, which is what a script or an agent can
 drive. For example, confirming symbols resolve without running the program:
@@ -110,20 +122,29 @@ help; point the symbol server at a local cache:
 set _NT_SYMBOL_PATH=srv*C:\symbols*https://msdl.microsoft.com/download/symbols
 ```
 
-**Quick sanity check.** `dumpbin /unwindinfo build\snip.exe` should list a record for every
-non-leaf function. If a function is missing, its `PROC FRAME` / `.allocstack` prologue is
-wrong, and a crash inside it will not unwind cleanly.
+**x86 exception handling is not the x64 story.** There are no `.pdata`/`.xdata` unwind tables
+and no `PROC FRAME`/`.pushreg`/`.allocstack` boilerplate. Structured exceptions chain through
+`fs:[0]` only if we register a handler, which nothing does yet. The old
+`dumpbin /unwindinfo` check does not apply to this target.
 
 ## Deliberately not used
 
+- **A 64-bit build.** Crinkler has no x64 support, so the app is x86 to keep one small size
+  build. See ADR-0002.
+- **`TINYHEADER`.** Smaller output, but Defender removes it.
 - **Visual Studio (`devenv`)** — needs a solution/project and offers nothing WinDbg does not
   for hand-written asm.
 - **x64dbg** — not installed; would be a new dependency for no gain over WinDbg.
 
 ## Gotchas observed
 
-- `/release` sets the PE checksum (so cdb no longer warns) and clears `/incremental`; the `.ilk`
-  and the `0xCC` padding both disappear with it.
-- The exe has no `.reloc` section: nothing carries a static absolute address. Add a pointer
-  table in `.data` and one reappears — the loader then needs it to rebase under ASLR.
-- `ml64` prints `Assembling: <path>` to stdout even with `/nologo`.
+- `/release` sets the PE checksum (so cdb no longer warns) and clears `/incremental`; the
+  `.ilk` and the `0xCC` padding both disappear with it.
+- The x86 exe **does** carry a `.reloc` section: the WNDCLASSEXW/etc. absolute addresses need
+  it to rebase under ASLR. That is normal for this target and no longer something to chase.
+- `ml` prints `Assembling: <path>` to stdout even with `/nologo`.
+- **Antivirus is an active hazard.** Windows Defender removed the Crinkler `TINYHEADER` output
+  within a second of it being written. The current `size` output (1,511 B, no TINYHEADER)
+  survived and ran, but Crinkler output is a documented false-positive magnet. If a build
+  silently produces no `snip.exe`, check Defender's protection history before debugging the
+  build.

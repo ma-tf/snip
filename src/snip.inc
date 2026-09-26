@@ -8,6 +8,8 @@
 ; Two includes on purpose: each file has one reason to change. This one changes
 ; when we change an interface between our modules; win32.inc changes when we
 ; bind a new API. See docs/architecture.md.
+;
+; x86: pointers are 32-bit, so pointer-sized struct fields are DWORD.
 
 IFNDEF SNIP_INC
 SNIP_INC EQU 1
@@ -23,9 +25,9 @@ IDC_DELAY           EQU 1003
 ; App - process-wide context. One instance lives in snip.asm's data and is
 ; handed to each window by pointer; a WndProc recovers it from GWLP_USERDATA.
 ; ---------------------------------------------------------------------------
-App STRUCT 8
-    hInstance   QWORD ?     ; process HINSTANCE, for window creation
-    hwndShell   QWORD ?     ; the Shell window
+App STRUCT 4
+    hInstance   DWORD ?     ; process HINSTANCE, for window creation
+    hwndShell   DWORD ?     ; the Shell window
     mode        DWORD ?     ; the mode drop-down's current index
     delay       DWORD ?     ; the delay drop-down's current index
 App ENDS
@@ -33,6 +35,6 @@ App ENDS
 ; ---------------------------------------------------------------------------
 ; Public labels
 ; ---------------------------------------------------------------------------
-shell_create PROTO          ; HWND shell_create(App *app) - see shell.asm
+shell_create PROTO STDCALL :DWORD   ; HWND shell_create(App *app) - see shell.asm
 
 ENDIF

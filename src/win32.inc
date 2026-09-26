@@ -7,6 +7,11 @@
 ; It is deliberately NOT our module interface - that is snip.inc. Keep project
 ; types, project constants, and project IDs out of this file. Add a declaration
 ; only when a module calls it; unused imports are still a cost.
+;
+; Target is 32-bit x86 under WOW64 on Windows 11. Functions are stdcall and the
+; prototypes carry parameter types so MASM's INVOKE can push arguments. Note the
+; x86 SDK does not export the ...LongPtrW forms; the 32-bit build calls the plain
+; Get/SetWindowLongW. See docs/adr/0002-x86-for-crinkler.md.
 
 IFNDEF WIN32_INC
 WIN32_INC EQU 1
@@ -14,50 +19,50 @@ WIN32_INC EQU 1
 ; ---------------------------------------------------------------------------
 ; kernel32
 ; ---------------------------------------------------------------------------
-EXTERN GetModuleHandleW:PROC
-EXTERN ExitProcess:PROC
+GetModuleHandleW PROTO STDCALL :DWORD
+ExitProcess      PROTO STDCALL :DWORD
 
 ; ---------------------------------------------------------------------------
 ; user32
 ; ---------------------------------------------------------------------------
-EXTERN SetProcessDpiAwarenessContext:PROC
-EXTERN LoadCursorW:PROC
-EXTERN RegisterClassExW:PROC
-EXTERN CreateWindowExW:PROC
-EXTERN ShowWindow:PROC
-EXTERN UpdateWindow:PROC
-EXTERN GetMessageW:PROC
-EXTERN TranslateMessage:PROC
-EXTERN DispatchMessageW:PROC
-EXTERN DefWindowProcW:PROC
-EXTERN PostQuitMessage:PROC
-EXTERN GetWindowLongPtrW:PROC
-EXTERN SetWindowLongPtrW:PROC
-EXTERN SendMessageW:PROC
-EXTERN GetDC:PROC
-EXTERN ReleaseDC:PROC
+SetProcessDpiAwarenessContext PROTO STDCALL :DWORD
+LoadCursorW                   PROTO STDCALL :DWORD, :DWORD
+RegisterClassExW              PROTO STDCALL :DWORD
+CreateWindowExW               PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD, :DWORD, :DWORD, :DWORD
+ShowWindow                    PROTO STDCALL :DWORD, :SDWORD
+UpdateWindow                  PROTO STDCALL :DWORD
+GetMessageW                   PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+TranslateMessage              PROTO STDCALL :DWORD
+DispatchMessageW              PROTO STDCALL :DWORD
+DefWindowProcW                PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+PostQuitMessage               PROTO STDCALL :SDWORD
+GetWindowLongW                PROTO STDCALL :DWORD, :SDWORD
+SetWindowLongW                PROTO STDCALL :DWORD, :SDWORD, :SDWORD
+SendMessageW                  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+GetDC                         PROTO STDCALL :DWORD
+ReleaseDC                     PROTO STDCALL :DWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
 ; gdi32
 ; ---------------------------------------------------------------------------
-EXTERN GetStockObject:PROC
-EXTERN CreateCompatibleDC:PROC
-EXTERN CreateDIBSection:PROC
-EXTERN CreatePen:PROC
-EXTERN SelectObject:PROC
-EXTERN DeleteObject:PROC
-EXTERN DeleteDC:PROC
-EXTERN Rectangle:PROC
-EXTERN Ellipse:PROC
-EXTERN Polyline:PROC
+GetStockObject     PROTO STDCALL :SDWORD
+CreateCompatibleDC PROTO STDCALL :DWORD
+CreateDIBSection   PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+CreatePen          PROTO STDCALL :SDWORD, :SDWORD, :DWORD
+SelectObject       PROTO STDCALL :DWORD, :DWORD
+DeleteObject       PROTO STDCALL :DWORD
+DeleteDC           PROTO STDCALL :DWORD
+Rectangle          PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD
+Ellipse            PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD
+Polyline           PROTO STDCALL :DWORD, :DWORD, :SDWORD
 
 ; ---------------------------------------------------------------------------
 ; comctl32 - ComboBoxEx and its image list. Registered at process init.
 ; ---------------------------------------------------------------------------
-EXTERN InitCommonControlsEx:PROC
-EXTERN ImageList_Create:PROC
-EXTERN ImageList_AddMasked:PROC
-EXTERN ImageList_Destroy:PROC
+InitCommonControlsEx PROTO STDCALL :DWORD
+ImageList_Create     PROTO STDCALL :SDWORD, :SDWORD, :DWORD, :SDWORD, :SDWORD
+ImageList_AddMasked  PROTO STDCALL :DWORD, :DWORD, :DWORD
+ImageList_Destroy    PROTO STDCALL :DWORD
 
 ; ---------------------------------------------------------------------------
 ; Window styles and messages (numeric values from the SDK headers)
@@ -119,41 +124,39 @@ GWLP_USERDATA       EQU -21
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 EQU -4
 
 ; ---------------------------------------------------------------------------
-; Structures (exact x64 layouts from the SDK headers)
+; Structures (exact x86 layouts from the SDK headers)
 ; ---------------------------------------------------------------------------
-WNDCLASSEXW STRUCT 8
+WNDCLASSEXW STRUCT
     cbSize          DWORD   ?
     style           DWORD   ?
-    lpfnWndProc     QWORD   ?
+    lpfnWndProc     DWORD   ?
     cbClsExtra      DWORD   ?
     cbWndExtra      DWORD   ?
-    hInstance       QWORD   ?
-    hIcon           QWORD   ?
-    hCursor         QWORD   ?
-    hbrBackground   QWORD   ?
-    lpszMenuName    QWORD   ?
-    lpszClassName   QWORD   ?
-    hIconSm         QWORD   ?
-WNDCLASSEXW ENDS                       ; sizeof == 80
+    hInstance       DWORD   ?
+    hIcon           DWORD   ?
+    hCursor         DWORD   ?
+    hbrBackground   DWORD   ?
+    lpszMenuName    DWORD   ?
+    lpszClassName   DWORD   ?
+    hIconSm         DWORD   ?
+WNDCLASSEXW ENDS                        ; sizeof == 48
 
-MSG STRUCT 8
-    hwnd     QWORD ?
-    message  DWORD ?
-    _pad0    DWORD ?
-    wParam   QWORD ?
-    lParam   QWORD ?
-    time     DWORD ?
-    ptX      DWORD ?
-    ptY      DWORD ?
-    lPrivate DWORD ?
-MSG ENDS                               ; sizeof == 48
-
-POINT STRUCT 4
+POINT STRUCT
     x        SDWORD ?
     y        SDWORD ?
 POINT ENDS                             ; sizeof == 8
 
-BITMAPINFOHEADER STRUCT 4
+MSG STRUCT
+    hwnd     DWORD ?
+    message  DWORD ?
+    wParam   DWORD ?
+    lParam   DWORD ?
+    time     DWORD ?
+    pt       POINT <>
+    lPrivate DWORD ?
+MSG ENDS                               ; sizeof == 32
+
+BITMAPINFOHEADER STRUCT
     biSize          DWORD ?
     biWidth         SDWORD ?
     biHeight        SDWORD ?
@@ -167,26 +170,24 @@ BITMAPINFOHEADER STRUCT 4
     biClrImportant  DWORD ?
 BITMAPINFOHEADER ENDS                  ; sizeof == 40
 
-INITCOMMONCONTROLSEX STRUCT 8
+INITCOMMONCONTROLSEX STRUCT
     dwSize   DWORD ?
     dwICC    DWORD ?
 INITCOMMONCONTROLSEX ENDS              ; sizeof == 8
 
-; x64 layout: iItem (INT_PTR) forces 8-byte alignment, so fMask is followed by
-; four padding bytes and lParam lands on an 8-byte boundary at offset 48.
-; (The field is fMask, not mask: MASK is a MASM operator.)
-COMBOBOXEXITEMW STRUCT 8
+; x86 layout: every field is pointer- or INT-sized (4 bytes), so there is no
+; padding and sizeof == 36. On x64 iItem (INT_PTR) forced 8-byte alignment and
+; sizeof was 56. (The field is fMask, not mask: MASK is a MASM operator.)
+COMBOBOXEXITEMW STRUCT
     fMask           DWORD ?
-    _pad0           DWORD ?
-    iItem           QWORD ?
-    pszText         QWORD ?
+    iItem           DWORD ?
+    pszText         DWORD ?
     cchTextMax      DWORD ?
     iImage          DWORD ?
     iSelectedImage  DWORD ?
     iOverlay        DWORD ?
     iIndent         DWORD ?
-    _pad1           DWORD ?
-    lParam          QWORD ?
-COMBOBOXEXITEMW ENDS                   ; sizeof == 56
+    lParam          DWORD ?
+COMBOBOXEXITEMW ENDS                   ; sizeof == 36
 
 ENDIF

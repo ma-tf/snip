@@ -10,10 +10,13 @@ follows. Read this before adding a module.
 
 ## What it is
 
-One pure-MASM64 Win32 executable, no C runtime, split into small named area modules that link
-into a single `snip.exe`. The split exists so any one piece can be held in the head at a time:
-each module owns one concern and talks to the others through explicit context structs, not
-through globals.
+One pure-MASM32 Win32 executable, no C runtime, split into small named area modules that link
+into a single `snip.exe`. It is 32-bit x86 (stdcall) and runs under WOW64 on 64-bit Windows;
+that target is chosen so the size build can be compressed by Crinkler, which does not support
+x64 objects. See [`docs/adr/0002-x86-for-crinkler.md`](adr/0002-x86-for-crinkler.md).
+
+The split exists so any one piece can be held in the head at a time: each module owns one
+concern and talks to the others through explicit context structs, not through globals.
 
 The eventual areas, in the order the spec names them: `snip` (entry and process init),
 `shell` (the main window), `capture`, `dib`, `overlay`, `select`, `geometry`, `mask`, `editor`,
@@ -27,6 +30,7 @@ The eventual areas, in the order the spec names them: `snip` (entry and process 
 | `src/snip.inc` | **Our** interface: context structs, project constants and IDs, and the prototypes the modules call each other through. Platform-free. |
 | `src/win32.inc` | The **platform** binding: one declaration of each Win32 import, SDK constant, and SDK struct layout we use. |
 | `build/` | All outputs (`snip.obj`, `shell.obj`, `snip.exe`, `snip.pdb`, `objs.rsp`). Gitignored. |
+| `tools/crinkler.exe` | The vendored compressing linker the `size` build uses. Win32 build. |
 | `build.cmd` | The build loop. |
 
 The two includes are split by **reason to change**: `snip.inc` changes when we change an
@@ -39,13 +43,18 @@ struct layout or a signature.
 
 **The build loop globs.** `build.cmd` assembles every `src\*.asm` and writes the object paths
 to `build\objs.rsp`, then links `@build\objs.rsp`. New area module = new file in `src/`; no
-existing file is edited. `ml64 /I "%SRC%"` is what lets `include snip.inc` resolve regardless
-of the current directory.
+existing file is edited. `ml /I "%SRC%."` is what lets `include snip.inc` resolve regardless
+of the current directory. `/c /coff` is mandatory as well as convenient: `ml` defaults to OMF
+on x86, and the size build's Crinkler reads COFF objects only.
 
 **No CRT, so the entry is ours.** `/subsystem:windows` normally wants `WinMainCRTStartup`, so
-`build.cmd` passes `/entry:WinMainASM` and `/nodefaultlib`. `WinMainASM` (in `snip.asm`) is the
-raw entry: it owns shadow space and 16-byte stack alignment, and ends in `ExitProcess` — never
-`ret`.
+both linkers pass `/entry:WinMainASM` and `/nodefaultlib`. `WinMainASM` (in `snip.asm`) is the
+raw entry: a stdcall `PROC` that never returns and ends in `ExitProcess`. MASM decorates the
+symbol to `_WinMainASM@0`; the linker and Crinkler both match the undecorated name.
+
+**Arguments go through `INVOKE`.** 32-bit MASM pushes stdcall arguments for us when a function
+has a typed `PROTO` in `win32.inc`. That is why every Win32 import is declared with parameter
+types, and why a module-local function called via `INVOKE` needs a forward `PROTO`.
 
 **Process init, then windows.** `WinMainASM` sets per-monitor DPI awareness v2 *before* any
 window exists, fills `App`, calls `shell_create(&app)`, and runs the message pump. Every later
@@ -53,11 +62,14 @@ ticket inherits the DPI declaration.
 
 **State lives in `App`, owned by `snip.asm`.** A window receives the pointer as
 `CreateWindowExW`'s `lpParam`, stashes it at `GWLP_USERDATA` in `WM_CREATE`, and recovers it
-with `GetWindowLongPtrW` in later messages. Globals are reserved for the entry point's handles;
-a singleton window's own chrome (its class, its last menu position) may live module-private.
+with `GetWindowLongW` in later messages. (x86 has no `...LongPtrW` export; the 32-bit build
+calls the plain form.) Globals are reserved for the entry point's handles; a singleton
+window's own chrome (its class, its last menu position) may live module-private.
 
 **Windows claim, modules own.** `shell_create` registers the Shell class and shows the window;
 the controls are built in `WM_CREATE`, where `lpCreateParams` arrives inside `CREATESTRUCTW`.
+The Shell's drop-downs are `ComboBoxEx32` (comctl32, icons drawn at runtime); that detail and
+its gotchas live in [`docs/shell.md`](shell.md).
 
 **Returns.** `eax` 0/nonzero for our own functions; Win32 `BOOL`/`HRESULT` values pass through
 untouched.
@@ -65,28 +77,30 @@ untouched.
 **Segments earn their file bytes.** Where a module declares its data decides whether it costs
 bytes in `snip.exe`. Read-only strings go in `.const` (`.rdata`); zero-initialised globals go
 in `.data?` (`.bss`), which the loader zero-fills and which holds no file bytes. Reach for
-`.data` only when a value is both mutable *and* initialised at load time — any `.data` byte
-drags a 512-byte file block into the image. This is what keeps the build at ~4 KB; see
+`.data` only when a value is both mutable *and* initialised at load time. This is what keeps
+the build at ~5.5 KB linked, and what keeps Crinkler's `size` build near 1.5 KB; see
 [`docs/build.md`](build.md).
 
 ## Gotchas
 
 - **`cx` is a register name.** A struct field called `cx` is a MASM syntax error; `win32.inc`
   prefixes the `CREATESTRUCTW` client-size fields with `_`.
-- **`PROTO` must agree with the `PROC`.** A `PROTO :QWORD` and a `PROC FRAME` with no
-  parameters is a conflict (A2111). Declare our labels with `PROTO` and no parameter list, and
-  document the signature in a comment.
-- **Every non-leaf function is `PROC FRAME`** with `.pushreg`/`.allocstack` before
-  `.endprolog`. `dumpbin /unwindinfo` should list one record per function; a missing record
-  means a crash there cannot unwind.
-- **Stack arguments start at `[rsp+20h]`**, after 32 bytes of shadow space. `CreateWindowExW`
-  has twelve parameters, so it is the one call where the stack args are laid out by hand.
+- **`PROTO` must agree with the `PROC`.** A `PROTO` that declares parameters and a `PROC` that
+  declares none is a conflict (A2111). Keep the two in step, and give a module-local callee a
+  forward `PROTO` if `WM_CREATE` (or anything else) reaches it with `INVOKE`.
+- **Stdlib symbols are decorated.** In `.model flat, stdcall`, `WinMainASM PROC` assembles to
+  `_WinMainASM@0` in the COFF symbol table. `/entry:WinMainASM` and Crinkler's
+  `/ENTRY:WinMainASM` both accept the undecorated name; don't hard-code the decorated form.
+- **The size build is not debuggable.** Crinkler emits no PDB and no symbols; run `build.cmd
+  debug` in WinDbg instead. x86 has no `.pdata`/unwind tables at all — SEH is the `fs:[0]`
+  chain — so the old `PROC FRAME` / `.pushreg` convention does not apply here.
 - **`GetStockObject(DEFAULT_GUI_FONT)`** is the font for stock controls; without `WM_SETFONT`
   they fall back to the ancient system font.
 
 ## See also
 
 - [Building and debugging `snip.exe`](build.md) — the build and WinDbg loops.
+- [The Shell](shell.md) — the window, the ComboBoxEx controls, and the drawn icons.
 - [`CONTEXT.md`](../CONTEXT.md) — the vocabulary the code and the tickets share.
 - [`docs/adr/`](adr/) — the decisions that are expensive to reverse.
 - [Ticket 01](../.scratch/asm-snip-build/issues/01-multi-module-build-shell.md) — the module
