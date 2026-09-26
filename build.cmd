@@ -107,8 +107,12 @@ rem size: Crinkler replaces link. It hash-imports DLL functions and compresses
 rem the image behind a self-extracting stub, so the import table and strings
 rem cost far less. It emits no PDB. TINYHEADER is deliberately NOT used: it
 rem shrinks the file ~44 bytes but Windows Defender quarantines its output.
+rem /TRANSFORM:CALLS is a reversible byte transform applied before compression;
+rem /ORDERTRIES reorders the parts to help the model: both cost nothing at
+rem runtime and take the file from 2,858 to 2,696 bytes. ORDERTRIES is kept
+rem modest (2,000, ~7s); 50,000 buys only 8 more bytes for a 69s build.
 "%CRINKLER%" /OUT:"%OUT%\snip.exe" /SUBSYSTEM:WINDOWS /ENTRY:WinMainASM /NODEFAULTLIB ^
-    /COMPMODE:SLOW @"%OUT%\objs.rsp" %LIBS%
+    /COMPMODE:SLOW /TRANSFORM:CALLS /ORDERTRIES:2000 @"%OUT%\objs.rsp" %LIBS%
 if errorlevel 1 (
     echo error: Crinkler failed
     exit /b 1

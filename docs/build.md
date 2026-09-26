@@ -38,7 +38,7 @@ Two variants, both writing `build\snip.exe`, so the run path never changes:
 | Variant         | Linked by      | Output                     | Size      |
 | --------------- | -------------- | -------------------------- | --------- |
 | `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 9,216 B   |
-| `size`          | Crinkler 3.0b  | `snip.exe`                 | 2,858 B   |
+| `size`          | Crinkler 3.0b  | `snip.exe`                 | 2,696 B   |
 
 The `size` variant is not "the debug build with the PDB removed" — it is a different linker.
 Crinkler resolves DLL imports by hash (four bytes each, instead of a full import table) and
@@ -60,11 +60,11 @@ link /nologo /machine:x86 /subsystem:windows /entry:WinMainASM /nodefaultlib ^
 
 rem size
 tools\crinkler.exe /OUT:build\snip.exe /SUBSYSTEM:WINDOWS /ENTRY:WinMainASM /NODEFAULTLIB ^
-     /COMPMODE:SLOW @build\objs.rsp ^
+     /COMPMODE:SLOW /TRANSFORM:CALLS /ORDERTRIES:2000 @build\objs.rsp ^
      kernel32.lib user32.lib gdi32.lib comctl32.lib
 ```
 
-Eight things to know about those lines:
+Nine things to know about those lines:
 
 - **No CRT.** `/subsystem:windows` defaults the entry symbol to `WinMainCRTStartup`; with no
   C runtime linked, that symbol does not exist. We `PUBLIC` our own entry and name it with
@@ -92,6 +92,12 @@ Eight things to know about those lines:
   support manifests — neither matters here, because DPI awareness is set by API call, not a
   manifest. `TINYHEADER` is deliberately not used even though it saves ~44 bytes: Windows
   Defender quarantines its output (measured 2026-09-26).
+- **Two Crinkler flags earn their keep.** `/TRANSFORM:CALLS` applies a reversible byte
+  transform before compression (2,858 → 2,737 B); `/ORDERTRIES:2000` reorders the parts to fit
+  the model better (→ 2,696 B, ~7 s). Neither changes runtime behaviour — the decompressor
+  undoes the transform. Higher `ORDERTRIES` is a dead end: 50,000 buys 8 more bytes for a 69 s
+  build. `/COMPMODE:SLOW` is already the maximum (there is no `VERYSLOW` in Crinkler 3.0), and
+  the run reports "Bytes lost to hashing" under 2, so the compressor is at its limit.
 - **Crinkler's Win32 build, not Win64.** A 64-bit Crinkler reads the real `System32`, finds
   64-bit DLLs, and skips them; the 32-bit tool under WOW64 is redirected to `SysWOW64` and
   finds the 32-bit export tables it needs. The vendored binary is the Win32 one.
@@ -101,7 +107,7 @@ drop-downs — the snip mode and the delay, each row carrying a 16×16 glyph dra
 and exits with code 0 when the window is closed (`WM_DESTROY` → `PostQuitMessage(0)`).
 Pressing New starts a Snipping session: the Shell hides, the Overlay covers the virtual
 screen, and a rectangular Selection can be dragged (ticket 02). Sizes: `debug` **9,216 B**
-plus `snip.pdb`; `size` (Crinkler) **2,858 B**.
+plus `snip.pdb`; `size` (Crinkler) **2,696 B**.
 
 ## Debugging
 
@@ -147,7 +153,7 @@ and no `PROC FRAME`/`.pushreg`/`.allocstack` boilerplate. Structured exceptions 
   it to rebase under ASLR. That is normal for this target and no longer something to chase.
 - `ml` prints `Assembling: <path>` to stdout even with `/nologo`.
 - **Antivirus is an active hazard.** Windows Defender removed the Crinkler `TINYHEADER` output
-  within a second of it being written. The current `size` output (1,511 B, no TINYHEADER)
+  within a second of it being written. The current `size` output (2,696 B, no TINYHEADER)
   survived and ran, but Crinkler output is a documented false-positive magnet. If a build
   silently produces no `snip.exe`, check Defender's protection history before debugging the
   build.
