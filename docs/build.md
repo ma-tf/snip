@@ -106,8 +106,11 @@ Nine things to know about those lines:
 drop-downs — the snip mode and the delay, each row carrying a 16×16 glyph drawn at runtime —
 and exits with code 0 when the window is closed (`WM_DESTROY` → `PostQuitMessage(0)`).
 Pressing New starts a Snipping session: the Shell hides, the Overlay covers the virtual
-screen, and a rectangular Selection can be dragged (ticket 02). Sizes: `debug` **9,216 B**
-plus `snip.pdb`; `size` (Crinkler) **2,696 B**.
+screen, and a rectangular Selection can be dragged (ticket 02). Completing the Selection
+blits its region straight off the screen into a Snip — an owned 32bpp straight-BGRA DIB
+with a Pristine twin — and opens the Editor window sized to it, reused for every later
+Snip (ticket 03). Sizes: `debug` **11,776 B** plus `snip.pdb`; `size` (Crinkler)
+**3,357 B**.
 
 ## Debugging
 

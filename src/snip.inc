@@ -21,7 +21,7 @@ SNIP_INC EQU 1
 App STRUCT 4
     hInstance   DWORD ?     ; process HINSTANCE, for window creation
     hwndShell   DWORD ?     ; the Shell window
-    hwndEditor  DWORD ?     ; the Editor window, once ticket 03 lands
+    hwndEditor  DWORD ?     ; the Editor window, once a Snip exists
     hwndOverlay DWORD ?     ; the Overlay, while a Snipping session is live
     mode        DWORD ?     ; the mode drop-down's current index
     delay       DWORD ?     ; the delay drop-down's current index
@@ -45,6 +45,32 @@ Pt STRUCT
     x       SDWORD ?
     y       SDWORD ?
 Pt ENDS
+
+; ---------------------------------------------------------------------------
+; Snip - the captured region, owned as one cropped bitmap.
+;
+; Working is the bitmap the Editor paints and (ticket 05) the encoder reads;
+; Pristine is its untouched twin, kept for the Eraser and Undo (ticket 06).
+; Both are straight (non-premultiplied) BGRA, 32bpp, top-down, and byte-identical
+; until annotation begins - see ADR-0001. hdib/hdc hold Working selected into a
+; memory DC so the Editor can BitBlt straight from it.
+;
+; There is one live Snip at a time. dib.asm owns the instance; editor.asm reads
+; it through dib_snip. x/y are the Snip's screen origin (the Selection's
+; top-left), kept so the Editor can place itself on the right monitor.
+; ---------------------------------------------------------------------------
+Snip STRUCT
+    hdib        DWORD ?     ; HBITMAP: the Working bitmap
+    bits        DWORD ?     ; its pixels, written directly
+    hdc         DWORD ?     ; the memory DC Working is selected into
+    oldbm       DWORD ?     ; what was selected in hdc before Working
+    pristine    DWORD ?     ; HBITMAP: the Pristine twin
+    pbits       DWORD ?     ; its pixels
+    x           SDWORD ?    ; the Snip's screen origin
+    y           SDWORD ?
+    w           SDWORD ?    ; the Selection's inclusive span, in pixels
+    h           SDWORD ?
+Snip ENDS
 
 ; Control identifiers (the Shell's; more land as later tickets need them).
 IDC_NEW             EQU 1001
@@ -81,5 +107,18 @@ sel_wndproc   PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 geo_normalise PROTO STDCALL :DWORD, :DWORD, :DWORD  ; void geo_normalise(Rect *r, Pt *a, Pt *b)
 geo_width     PROTO STDCALL :DWORD                  ; SDWORD geo_width(Rect *r)
 geo_height    PROTO STDCALL :DWORD                  ; SDWORD geo_height(Rect *r)
+
+; capture.asm - screen capture. Ticket 03 blits the Selection's region straight
+; from the screen DC into a caller's bitmap; ticket 08 adds the PrintWindow path
+; for window mode. It owns no state between calls.
+capture_region PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; BOOL capture_region(Rect *sel, DWORD hdcDst, DWORD w, DWORD h)
+
+; dib.asm - the Snip: ownership, alpha synthesis, and the Pristine twin. The
+; crop maths stays in geometry.asm; this module is the impure DIB plumbing.
+dib_crop PROTO STDCALL :DWORD   ; BOOL dib_crop(Rect *sel) - atomic: a failure keeps the old Snip
+dib_snip PROTO STDCALL          ; Snip *dib_snip(void)
+
+; editor.asm - the Editor window. Created once, resized and reused per Snip.
+editor_open PROTO STDCALL :DWORD  ; BOOL editor_open(App *app)
 
 ENDIF

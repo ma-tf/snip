@@ -12,7 +12,8 @@
 ; than falling through to the drag handler - see the prototype's bug 2).
 ;
 ; The live state is module-private: a session is a singleton, like the Shell.
-; The completed Selection is handed to ticket 03 through sel_take.
+; When the Selection completes, select_finish drives the handoff: the Selection
+; is cropped into a Snip (dib.asm) and the Editor opens (editor.asm).
 ;
 ; See docs/select.md.
 
@@ -60,7 +61,7 @@ sel_rect   Rect <>          ; the Selection so far
 ; not come up the Shell is restored, so a failed session costs the user
 ; nothing. Already-live is a no-op, not an error.
 ; ---------------------------------------------------------------------------
-select_begin PROC USES ebx esi app:DWORD
+select_begin PROC USES ebx esi edi app:DWORD
     mov  esi, app
     cmp  sel_live, 0
     jne  sb_ok
@@ -79,10 +80,18 @@ select_begin PROC USES ebx esi app:DWORD
     mov  sel_app, esi
 
     ; The Shell goes away for the duration: it must never sit under the dim or
-    ; inside the snip (spec, user story 5).
+    ; inside the snip (spec, user story 5). The Editor goes too - the topmost
+    ; Overlay covers it, so the user never sees it, but it is not excluded from
+    ; capture and a Selection over it would otherwise capture its pixels.
     mov  ebx, [esi].App.hwndShell
     INVOKE ShowWindow, ebx, SW_HIDE
 
+    mov  edi, [esi].App.hwndEditor
+    test edi, edi
+    jz   sb_raise
+    INVOKE ShowWindow, edi, SW_HIDE
+
+sb_raise:
     INVOKE overlay_show, esi, sel_mode
     test eax, eax
     jz   sb_fail
@@ -93,7 +102,13 @@ sb_ok:
     ret
 
 sb_fail:
+    ; A session that cannot raise the Overlay costs the user nothing: both
+    ; windows come back.
     INVOKE ShowWindow, ebx, SW_SHOW
+    test edi, edi
+    jz   sb_fail_done
+    INVOKE ShowWindow, edi, SW_SHOW
+sb_fail_done:
     xor  eax, eax
     ret
 select_begin ENDP
@@ -193,12 +208,33 @@ su_done:
 sel_lup ENDP
 
 ; ---------------------------------------------------------------------------
-; select_finish - the Selection is complete. Hand it on and end the session.
-; Ticket 02 stops here: the Selection is recorded and the Shell comes back.
-; Ticket 03 picks the Selection up (sel_take), captures, and opens the Editor.
+; select_finish - the Selection is complete. Crop it into a Snip and hand it to
+; the Editor, then end the session.
+;
+; Order matters. The capture must happen while the Shell and Editor are still
+; hidden (they were hidden at begin), or a re-shown window could land in the
+; Snip. dib_crop is atomic, so a failed capture leaves any previous Snip - and
+; the Editor showing it - intact; the visible error surface is ticket 11.
 ; ---------------------------------------------------------------------------
-select_finish PROC
+select_finish PROC USES ebx esi
+    mov  esi, sel_app
+    test esi, esi
+    jz   sf_off
+
+    INVOKE dib_crop, ADDR sel_rect
+    mov  ebx, eax
+
     INVOKE sel_restore
+    mov  sel_live, 0
+
+    test ebx, ebx
+    jz   sf_done
+    INVOKE editor_open, esi
+
+sf_done:
+    ret
+
+sf_off:
     mov  sel_live, 0
     ret
 select_finish ENDP
@@ -228,9 +264,17 @@ sel_restore PROC USES esi
 
     mov  eax, [esi].App.hwndShell
     test eax, eax
-    jz   sres_done
+    jz   sres_editor
     INVOKE ShowWindow, eax, SW_SHOW
     INVOKE SetFocus, eax
+
+sres_editor:
+    ; The Editor hid with the Shell; it returns alongside it. On the first Snip
+    ; it does not exist yet and editor_open creates it moments later.
+    mov  eax, [esi].App.hwndEditor
+    test eax, eax
+    jz   sres_done
+    INVOKE ShowWindow, eax, SW_SHOW
 
 sres_done:
     ret

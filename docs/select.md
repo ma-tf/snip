@@ -24,12 +24,12 @@ surface and this is the behaviour that runs on it.
 
 ## How it works
 
-**A session is a small state machine.** `select_begin` (New) hides the Shell and
-raises the Overlay through `overlay_show`. `sel_ldown` anchors the drag and calls
-`SetCapture`, so tracking survives the pointer leaving the window.
-`sel_mmove` re-normalises the rectangle and repaints. `sel_lup` finishes the
-session or ignores a stray click. `select_cancel` ends it with nothing recorded.
-`select_finish` ends it with the Selection recorded.
+**A session is a small state machine.** `select_begin` (New) hides the Shell and the Editor,
+then raises the Overlay through `overlay_show`. `sel_ldown` anchors the drag and calls
+`SetCapture`, so tracking survives the pointer leaving the window. `sel_mmove` re-normalises
+the rectangle and repaints. `sel_lup` finishes the session or ignores a stray click.
+`select_cancel` ends it with nothing recorded. `select_finish` ends it by cropping the
+Selection into a Snip and opening the Editor.
 
 **Capture, not hover.** `SetCapture` on mouse-down and `ReleaseCapture` on
 release is what makes a drag that runs off the Overlay still track. Without it a
@@ -50,8 +50,13 @@ nothing downstream can pick up a cancelled session. Escape and right-click both
 route here.
 
 **The Shell hides for the session and returns with it.** User story 5: our own
-window must never sit under the dim or inside the snip. `select_begin` hides it
-before raising the Overlay; `sel_restore` shows it again and gives it focus.
+window must never sit under the dim or inside the snip. `select_begin` hides the
+Shell — and the Editor with it — before raising the Overlay; `sel_restore` shows
+both again and gives the Shell focus. The Editor is hidden for a subtler reason
+than the Shell: the topmost Overlay covers it, so the user never sees it, but it
+is not excluded from capture, so a Selection dragged over it would otherwise
+land the Editor's own pixels in the Snip. Between the hide and the restore,
+`select_finish` runs the capture, so both our windows are guaranteed absent.
 
 **The dependency runs one way.** `select` calls `overlay_show`,
 `overlay_repaint`, and `overlay_hide`. The Overlay never calls back into
@@ -72,9 +77,13 @@ before raising the Overlay; `sel_restore` shows it again and gives it focus.
   live session is a no-op, not an error — the Overlay is already up.
 - **A failed `overlay_show` restores the Shell.** A session that cannot raise
   the Overlay should cost the user nothing, not leave them with no window at all.
+- **`dib_crop` runs before `sel_restore`, never after.** The capture must happen
+  while the Shell and Editor are hidden. `dib_crop` is atomic, so a failed
+  capture leaves the previous Snip (and the Editor showing it) intact.
 
 ## See also
 
 - [`docs/overlay.md`](overlay.md) — the surface this drives.
+- [`docs/capture.md`](capture.md) — what `select_finish` hands the Selection to.
 - [`CONTEXT.md`](../CONTEXT.md) — *Selection*, *Snipping session*, *Overlay*.
 - [Ticket 02](../.scratch/asm-snip-build/issues/02-overlay-rectangular-selection.md).

@@ -51,6 +51,11 @@ MoveWindow                    PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :
 wsprintfW                     PROTO C :DWORD, :DWORD, :VARARG
 SetWindowDisplayAffinity      PROTO STDCALL :DWORD, :DWORD
 UpdateLayeredWindow           PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+BeginPaint                    PROTO STDCALL :DWORD, :DWORD
+EndPaint                      PROTO STDCALL :DWORD, :DWORD
+AdjustWindowRect              PROTO STDCALL :DWORD, :DWORD, :DWORD
+MonitorFromRect               PROTO STDCALL :DWORD, :DWORD
+GetMonitorInfoW               PROTO STDCALL :DWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
 ; gdi32
@@ -71,6 +76,7 @@ SetTextColor       PROTO STDCALL :DWORD, :DWORD
 GetClientRect      PROTO STDCALL :DWORD, :DWORD
 GdiFlush           PROTO STDCALL
 DrawTextW          PROTO STDCALL :DWORD, :DWORD, :SDWORD, :DWORD, :DWORD
+BitBlt             PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD, :SDWORD, :SDWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
 ; comctl32 - ComboBoxEx and its image list. Registered at process init.
@@ -152,6 +158,8 @@ BLACK_BRUSH         EQU 4              ; GetStockObject ordinal
 NULL_BRUSH          EQU 5              ; GetStockObject ordinal (hollow)
 BI_RGB              EQU 0
 DIB_RGB_COLORS      EQU 0
+SRCCOPY             EQU 00CC0020h
+CAPTUREBLT          EQU 40000000h      ; include layered/composited windows
 R2_NOT              EQU 6              ; invert the destination: an always-visible outline
 TRANSPARENT_BK      EQU 1
 GWL_STYLE           EQU -16
@@ -162,6 +170,9 @@ SM_XVIRTUALSCREEN   EQU 76
 SM_YVIRTUALSCREEN   EQU 77
 SM_CXVIRTUALSCREEN  EQU 78
 SM_CYVIRTUALSCREEN  EQU 79
+
+; MonitorFromRect / GetMonitorInfoW: the Editor sizes itself to the work area.
+MONITOR_DEFAULTTONEAREST EQU 2
 
 ; SetWindowDisplayAffinity: keep the Overlay out of its own capture.
 WDA_NONE            EQU 00000000h
@@ -265,5 +276,21 @@ COMBOBOXEXITEMW STRUCT
     iIndent         DWORD ?
     lParam          DWORD ?
 COMBOBOXEXITEMW ENDS                   ; sizeof == 36
+
+PAINTSTRUCT STRUCT
+    hdc         DWORD ?
+    fErase      DWORD ?
+    rcPaint     RECT <>
+    fRestore    DWORD ?
+    fIncUpdate  DWORD ?
+    rgbReserved BYTE 32 DUP(?)
+PAINTSTRUCT ENDS                       ; sizeof == 64
+
+MONITORINFO STRUCT
+    cbSize      DWORD ?
+    rcMonitor   RECT <>
+    rcWork      RECT <>
+    dwFlags     DWORD ?
+MONITORINFO ENDS                       ; sizeof == 40
 
 ENDIF

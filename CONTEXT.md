@@ -65,6 +65,10 @@ _Avoid_: main window, home
 The window shown after a Selection becomes a Snip, holding the Working bitmap and the annotation tools.
 _Avoid_: canvas window, annotator
 
+**Pristine twin**:
+A Snip's Pristine bitmap, kept alongside its Working bitmap. The two start byte-identical; annotations only ever touch Working.
+_Avoid_: copy, backup
+
 ### Approach
 
 **Platform primitive**:

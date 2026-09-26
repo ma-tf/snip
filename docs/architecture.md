@@ -20,8 +20,8 @@ concern and talks to the others through explicit context structs, not through gl
 
 The eventual areas, in the order the spec names them: `snip` (entry and process init),
 `shell` (the main window), `capture`, `dib`, `overlay`, `select`, `geometry`, `mask`, `editor`,
-`encode`. **Landed so far:** `snip`, `shell`, `geometry`, `overlay`, `select`. Modules land as
-their tickets do; the build has no list to update.
+`encode`. **Landed so far:** `snip`, `shell`, `geometry`, `capture`, `dib`, `overlay`, `select`,
+`editor`. Modules land as their tickets do; the build has no list to update.
 
 ## Where it lives
 
@@ -77,6 +77,14 @@ drag, and registers `sel_wndproc` as the Overlay class's WndProc. `select` calls
 `overlay` and never the reverse. `geometry.asm` holds the crop maths Win32-free. See
 [`docs/overlay.md`](overlay.md) and [`docs/select.md`](select.md).
 
+**A completed Selection becomes a Snip, then the Editor opens.** `select_finish` runs the
+handoff in order: `dib_crop` blits the Selection's region straight off the screen
+(`capture.asm`) into an owned 32bpp straight-BGRA bitmap with a Pristine twin, then
+`sel_restore` brings the Shell and Editor back, then `editor_open` sizes and shows the
+Editor. The capture happens while both our windows are hidden, so neither lands in the snip;
+the region blit means no full-screen buffer is ever held. See
+[`docs/capture.md`](capture.md).
+
 **Returns.** `eax` 0/nonzero for our own functions; Win32 `BOOL`/`HRESULT` values pass through
 untouched.
 
@@ -109,6 +117,8 @@ the build at ~5.5 KB linked, and what keeps Crinkler's `size` build near 1.5 KB;
 - [The Shell](shell.md) — the window, the ComboBoxEx controls, and the drawn icons.
 - [The Overlay](overlay.md) — the layered surface, the dim, and the readout chrome.
 - [The Selection](select.md) — the Snipping session and the drag state machine.
+- [The Snip and the capture path](capture.md) — the region blit, alpha synthesis, and the
+  Editor window.
 - [`CONTEXT.md`](../CONTEXT.md) — the vocabulary the code and the tickets share.
 - [`docs/adr/`](adr/) — the decisions that are expensive to reverse.
 - [Ticket 01](../.scratch/asm-snip-build/issues/01-multi-module-build-shell.md) — the module

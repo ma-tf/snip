@@ -12,6 +12,10 @@ A capture yields the whole virtual screen, but a Snip is cropped to the Selectio
 
 The Editor's Working bitmap is byte-identical in format to what WIC wants, so Save As and Copy need no pixel conversion pass. Any future GPU compositing would have to premultiply on the way in, or supersede this ADR.
 
+## Amendment — the crop is a direct region blit
+
+Ticket 03 refined "a capture yields the whole virtual screen, but a Snip is cropped to the Selection immediately". No full-screen buffer is ever allocated: `capture.asm` blits the Selection's region **straight into the Snip's bitmap** with one `BitBlt` from the screen DC, because a Selection's screen coordinates are already valid source coordinates (negative origin included, off-desktop parts reading black). The Snip still owns its pixels outright and is still eagerly cropped; the ~30 MB intermediate and a second full-frame pass are simply gone. Window mode (ticket 08) will still `PrintWindow` into the Snip's bitmap rather than capture-then-crop.
+
 ## Amendment — free-form cuts
 
 For free-form snips, "alpha 255 inside the Selection, 0 outside" is refined to per-pixel **coverage**: fully opaque inside the Trace, absent outside, partially transparent along the cut, which is filled antialiased with GDI+ (`GraphicsPath` + `FillPath`). Rectangular, window and full-screen snips stay binary. The straight-BGRA rule is unchanged — only the alpha values differ.
