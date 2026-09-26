@@ -22,6 +22,14 @@ _Avoid_: region, marquee, area
 The full-screen dimmed surface a Selection is marked on. It spans the virtual screen and excludes itself from capture.
 _Avoid_: mask, layer, backdrop
 
+**Dim**:
+The Overlay's translucent black layer, at which a Selection is punched out as an undimmed hole.
+_Avoid_: shade, tint, scrim
+
+**Readout**:
+The opaque plate on the Overlay naming the Selection's size as `W x H`. Opaque chrome is why the Overlay presents per-pixel alpha.
+_Avoid_: tooltip, label, badge
+
 **Trace**:
 The continuous path a hand draws on the Overlay in free-form mode, from press to release. A Trace becomes a Mask when the Snip is cropped.
 _Avoid_: stroke, path, outline
@@ -53,7 +61,6 @@ _Avoid_: line, path, mark
 **Shell**:
 The application's main window: the mode dropdown, the delay, and the command that starts a snip.
 _Avoid_: main window, home
-
 **Editor**:
 The window shown after a Selection becomes a Snip, holding the Working bitmap and the annotation tools.
 _Avoid_: canvas window, annotator

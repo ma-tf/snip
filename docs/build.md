@@ -37,8 +37,8 @@ Two variants, both writing `build\snip.exe`, so the run path never changes:
 
 | Variant         | Linked by      | Output                     | Size      |
 | --------------- | -------------- | -------------------------- | --------- |
-| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 5,632 B   |
-| `size`          | Crinkler 3.0b  | `snip.exe`                 | 1,511 B   |
+| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 9,216 B   |
+| `size`          | Crinkler 3.0b  | `snip.exe`                 | 2,858 B   |
 
 The `size` variant is not "the debug build with the PDB removed" — it is a different linker.
 Crinkler resolves DLL imports by hash (four bytes each, instead of a full import table) and
@@ -99,6 +99,9 @@ Eight things to know about those lines:
 `snip.exe` opens a window titled `Snipping Tool` with a New button and two `ComboBoxEx`
 drop-downs — the snip mode and the delay, each row carrying a 16×16 glyph drawn at runtime —
 and exits with code 0 when the window is closed (`WM_DESTROY` → `PostQuitMessage(0)`).
+Pressing New starts a Snipping session: the Shell hides, the Overlay covers the virtual
+screen, and a rectangular Selection can be dragged (ticket 02). Sizes: `debug` **9,216 B**
+plus `snip.pdb`; `size` (Crinkler) **2,858 B**.
 
 ## Debugging
 

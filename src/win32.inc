@@ -41,6 +41,16 @@ SetWindowLongW                PROTO STDCALL :DWORD, :SDWORD, :SDWORD
 SendMessageW                  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 GetDC                         PROTO STDCALL :DWORD
 ReleaseDC                     PROTO STDCALL :DWORD, :DWORD
+GetSystemMetrics              PROTO STDCALL :SDWORD
+InvalidateRect                PROTO STDCALL :DWORD, :DWORD, :DWORD
+SetCapture                    PROTO STDCALL :DWORD
+ReleaseCapture                PROTO STDCALL
+SetFocus                      PROTO STDCALL :DWORD
+SetForegroundWindow           PROTO STDCALL :DWORD
+MoveWindow                    PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD
+wsprintfW                     PROTO C :DWORD, :DWORD, :VARARG
+SetWindowDisplayAffinity      PROTO STDCALL :DWORD, :DWORD
+UpdateLayeredWindow           PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
 ; gdi32
@@ -55,6 +65,12 @@ DeleteDC           PROTO STDCALL :DWORD
 Rectangle          PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD
 Ellipse            PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD
 Polyline           PROTO STDCALL :DWORD, :DWORD, :SDWORD
+FillRect           PROTO STDCALL :DWORD, :DWORD, :DWORD
+SetBkMode          PROTO STDCALL :DWORD, :SDWORD
+SetTextColor       PROTO STDCALL :DWORD, :DWORD
+GetClientRect      PROTO STDCALL :DWORD, :DWORD
+GdiFlush           PROTO STDCALL
+DrawTextW          PROTO STDCALL :DWORD, :DWORD, :SDWORD, :DWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
 ; comctl32 - ComboBoxEx and its image list. Registered at process init.
@@ -73,23 +89,41 @@ WS_MINIMIZEBOX      EQU 00020000h
 WS_CHILD            EQU 40000000h
 WS_VISIBLE          EQU 10000000h
 WS_TABSTOP          EQU 00010000h
+WS_POPUP            EQU 80000000h
+
+WS_EX_LAYERED       EQU 00080000h
+WS_EX_TRANSPARENT   EQU 00000020h
+WS_EX_TOPMOST       EQU 00000008h
+WS_EX_TOOLWINDOW    EQU 00000080h
 
 BS_PUSHBUTTON       EQU 0
 CBS_DROPDOWNLIST    EQU 3
 
 CW_USEDEFAULT       EQU 80000000h
 SW_SHOWDEFAULT      EQU 10
+SW_SHOW             EQU 5
+SW_HIDE             EQU 0
 CS_HREDRAW          EQU 0002h
 CS_VREDRAW          EQU 0001h
 IDC_ARROW           EQU 7F00h          ; 32512, an HCURSOR ordinal
+IDC_CROSS           EQU 7F03h          ; 32515, the crosshair
 COLOR_WINDOW_1      EQU 6              ; (COLOR_WINDOW + 1), a valid pseudo-HBRUSH
 DEFAULT_GUI_FONT    EQU 17
 
 WM_CREATE           EQU 0001h
 WM_DESTROY          EQU 0002h
+WM_PAINT            EQU 000Fh
+WM_CLOSE            EQU 0010h
+WM_ERASEBKGND       EQU 0014h
+WM_KEYDOWN          EQU 0100h
+WM_MOUSEMOVE        EQU 0200h
+WM_LBUTTONDOWN      EQU 0201h
+WM_LBUTTONUP        EQU 0202h
+WM_RBUTTONUP        EQU 0205h
 WM_COMMAND          EQU 0111h
 WM_SETFONT          EQU 0030h
 
+BN_CLICKED          EQU 0
 CBN_SELCHANGE       EQU 1
 
 CB_GETCURSEL        EQU 0147h
@@ -118,8 +152,31 @@ BLACK_BRUSH         EQU 4              ; GetStockObject ordinal
 NULL_BRUSH          EQU 5              ; GetStockObject ordinal (hollow)
 BI_RGB              EQU 0
 DIB_RGB_COLORS      EQU 0
+R2_NOT              EQU 6              ; invert the destination: an always-visible outline
+TRANSPARENT_BK      EQU 1
+GWL_STYLE           EQU -16
+GA_ROOT             EQU 2
+
+; Virtual-screen metrics (GetSystemMetrics). May be negative.
+SM_XVIRTUALSCREEN   EQU 76
+SM_YVIRTUALSCREEN   EQU 77
+SM_CXVIRTUALSCREEN  EQU 78
+SM_CYVIRTUALSCREEN  EQU 79
+
+; SetWindowDisplayAffinity: keep the Overlay out of its own capture.
+WDA_NONE            EQU 00000000h
+WDA_EXCLUDEFROMCAPTURE EQU 00000011h
+
+; UpdateLayeredWindow
+ULW_ALPHA           EQU 00000002h
+AC_SRC_OVER         EQU 0
+AC_SRC_ALPHA        EQU 1
+
+DWM_CLOAKED         EQU 14             ; DWMWA_CLOAKED
 
 GWLP_USERDATA       EQU -21
+
+VK_ESCAPE           EQU 1Bh
 
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 EQU -4
 
@@ -145,6 +202,25 @@ POINT STRUCT
     x        SDWORD ?
     y        SDWORD ?
 POINT ENDS                             ; sizeof == 8
+
+RECT STRUCT
+    left     SDWORD ?
+    top      SDWORD ?
+    right    SDWORD ?
+    bottom   SDWORD ?
+RECT ENDS                              ; sizeof == 16
+
+SIZEW STRUCT
+    _cx      SDWORD ?                   ; `cx` is a register name; MASM rejects it
+    _cy      SDWORD ?
+SIZEW ENDS                             ; sizeof == 8
+
+BLENDFUNCTION STRUCT
+    BlendOp             BYTE ?
+    BlendFlags          BYTE ?
+    SourceConstantAlpha BYTE ?
+    AlphaFormat         BYTE ?
+BLENDFUNCTION ENDS                     ; sizeof == 4
 
 MSG STRUCT
     hwnd     DWORD ?

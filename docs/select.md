@@ -1,0 +1,80 @@
+# The Selection
+
+How a Snipping session runs: what raises the Overlay, what tracks the drag, and
+what puts the Shell back. Follows the template in
+[`docs/architecture.md`](architecture.md).
+
+## What it is
+
+The state machine behind the Overlay's behaviour. It owns the session lifecycle
+— from a New click to the Selection being completed or cancelled — and the drag
+that produces a rectangular Selection. It is the only module that knows a
+session is in flight.
+
+Ticket 02 is rectangular only. Free-form, window, and full-screen add their own
+mouse-down paths here when tickets 07, 08, and 09 land.
+
+## Where it lives
+
+`src/select.asm`. The live session state (`sel_live`, `sel_down`, the origin and
+current points, the Selection so far) is module-private in `.data?`: a session is
+a singleton, exactly like the Shell. `sel_wndproc` is the Overlay window's
+WndProc — it lives here rather than in `overlay.asm` because the Overlay is a
+surface and this is the behaviour that runs on it.
+
+## How it works
+
+**A session is a small state machine.** `select_begin` (New) hides the Shell and
+raises the Overlay through `overlay_show`. `sel_ldown` anchors the drag and calls
+`SetCapture`, so tracking survives the pointer leaving the window.
+`sel_mmove` re-normalises the rectangle and repaints. `sel_lup` finishes the
+session or ignores a stray click. `select_cancel` ends it with nothing recorded.
+`select_finish` ends it with the Selection recorded.
+
+**Capture, not hover.** `SetCapture` on mouse-down and `ReleaseCapture` on
+release is what makes a drag that runs off the Overlay still track. Without it a
+fast drag out of the window would freeze the Selection at the edge.
+
+**The Selection is a rectangle, normalised.** A drag runs in any direction, so
+`geo_normalise` writes the bounding box with `left <= right` and `top <= bottom`
+regardless of which way the pointer went. That maths is `geometry.asm`'s, which
+is Win32-free on purpose — the trickiest part of the module reads on its own.
+
+**One pixel is a Selection; zero is not.** `sel_lup` measures the rectangle and
+ignores anything with a width or height of zero or less, so a click that never
+drags leaves the Overlay up instead of producing an empty snip.
+
+**Cancellation restores, it does not remember.** `select_cancel` clears the drag
+and restores the Shell, and deliberately does *not* record the Selection, so
+nothing downstream can pick up a cancelled session. Escape and right-click both
+route here.
+
+**The Shell hides for the session and returns with it.** User story 5: our own
+window must never sit under the dim or inside the snip. `select_begin` hides it
+before raising the Overlay; `sel_restore` shows it again and gives it focus.
+
+**The dependency runs one way.** `select` calls `overlay_show`,
+`overlay_repaint`, and `overlay_hide`. The Overlay never calls back into
+`select` except through the WndProc it registered, and never reads `sel_*`.
+
+## Gotchas
+
+- **Read `lParam` into memory before any call.** On x86 `INVOKE` pushes it, so
+  the x64 volatile-register trap does not exist here — but parsing the point
+  first is the habit that keeps both targets' handlers identical, and it is
+  what the ticket 07 prototype got wrong on x64.
+- **A per-mode mouse-down path must not fall through to the drag handler.**
+  The prototype's bug 2 was exactly this: a click in window mode ran the
+  rectangular update and collapsed the snip to `0 x 0`. Each mode gets its own
+  branch; ticket 02 has only the rectangular one, and the shape is already
+  right for the rest.
+- **`sel_live` makes begin and cancel idempotent.** Calling `select_begin` on a
+  live session is a no-op, not an error — the Overlay is already up.
+- **A failed `overlay_show` restores the Shell.** A session that cannot raise
+  the Overlay should cost the user nothing, not leave them with no window at all.
+
+## See also
+
+- [`docs/overlay.md`](overlay.md) — the surface this drives.
+- [`CONTEXT.md`](../CONTEXT.md) — *Selection*, *Snipping session*, *Overlay*.
+- [Ticket 02](../.scratch/asm-snip-build/issues/02-overlay-rectangular-selection.md).

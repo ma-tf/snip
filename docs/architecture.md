@@ -20,15 +20,15 @@ concern and talks to the others through explicit context structs, not through gl
 
 The eventual areas, in the order the spec names them: `snip` (entry and process init),
 `shell` (the main window), `capture`, `dib`, `overlay`, `select`, `geometry`, `mask`, `editor`,
-`encode`. Modules land as their tickets do; the build has no list to update.
+`encode`. **Landed so far:** `snip`, `shell`, `geometry`, `overlay`, `select`. Modules land as
+their tickets do; the build has no list to update.
 
 ## Where it lives
 
 | Path | What it holds |
 | --- | --- |
 | `src/*.asm` | One file per area module. Each is assembled to `build/<name>.obj` and linked. |
-| `src/snip.inc` | **Our** interface: context structs, project constants and IDs, and the prototypes the modules call each other through. Platform-free. |
-| `src/win32.inc` | The **platform** binding: one declaration of each Win32 import, SDK constant, and SDK struct layout we use. |
+| `src/snip.inc` | **Our** interface: context structs, project constants and IDs, and the prototypes the modules call each other through. Platform-free. || `src/win32.inc` | The **platform** binding: one declaration of each Win32 import, SDK constant, and SDK struct layout we use. |
 | `build/` | All outputs (`snip.obj`, `shell.obj`, `snip.exe`, `snip.pdb`, `objs.rsp`). Gitignored. |
 | `tools/crinkler.exe` | The vendored compressing linker the `size` build uses. Win32 build. |
 | `build.cmd` | The build loop. |
@@ -71,6 +71,12 @@ the controls are built in `WM_CREATE`, where `lpCreateParams` arrives inside `CR
 The Shell's drop-downs are `ComboBoxEx32` (comctl32, icons drawn at runtime); that detail and
 its gotchas live in [`docs/shell.md`](shell.md).
 
+**The Overlay is a surface, the Selection is the behaviour.** `overlay.asm` owns the window,
+the premultiplied DIB, and the chrome; `select.asm` owns the session state machine and the
+drag, and registers `sel_wndproc` as the Overlay class's WndProc. `select` calls into
+`overlay` and never the reverse. `geometry.asm` holds the crop maths Win32-free. See
+[`docs/overlay.md`](overlay.md) and [`docs/select.md`](select.md).
+
 **Returns.** `eax` 0/nonzero for our own functions; Win32 `BOOL`/`HRESULT` values pass through
 untouched.
 
@@ -101,6 +107,8 @@ the build at ~5.5 KB linked, and what keeps Crinkler's `size` build near 1.5 KB;
 
 - [Building and debugging `snip.exe`](build.md) — the build and WinDbg loops.
 - [The Shell](shell.md) — the window, the ComboBoxEx controls, and the drawn icons.
+- [The Overlay](overlay.md) — the layered surface, the dim, and the readout chrome.
+- [The Selection](select.md) — the Snipping session and the drag state machine.
 - [`CONTEXT.md`](../CONTEXT.md) — the vocabulary the code and the tickets share.
 - [`docs/adr/`](adr/) — the decisions that are expensive to reverse.
 - [Ticket 01](../.scratch/asm-snip-build/issues/01-multi-module-build-shell.md) — the module

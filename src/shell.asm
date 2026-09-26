@@ -165,6 +165,18 @@ wm_command:
     mov  edx, wParam
     shr  edx, 16
     and  edx, 0FFFFh
+
+    ; New: start a Snipping session (ticket 02).
+    cmp  edx, BN_CLICKED
+    jne  wm_notify_combo
+    cmp  eax, IDC_NEW
+    jne  wnd_default
+    INVOKE GetWindowLongW, hwnd, GWLP_USERDATA
+    INVOKE select_begin, eax
+    xor  eax, eax
+    ret
+
+wm_notify_combo:
     cmp  edx, CBN_SELCHANGE
     jne  wnd_default
     cmp  eax, IDC_MODE
