@@ -197,4 +197,20 @@ INK_PEN         EQU 0
 INK_HILITE      EQU 1
 INK_ERASER      EQU 2
 
+; err.asm - the error surface: one MessageBoxW per failure (ticket 11). A module
+; reports by id; err.asm owns the wording and the style. Every failure is
+; recoverable except the startup ones, which end the process.
+err_show PROTO STDCALL :DWORD, :DWORD   ; int err_show(HWND hwndOwner, DWORD id)
+
+; The ERR_* ids err_show maps to a message, in err_table order. Adding one means
+; a constant here, a string and a table entry in err.asm, and ERR_LAST moved on.
+; An id above ERR_LAST is ignored rather than read past the table.
+ERR_CAPTURE        EQU 0     ; a Selection could not be captured
+ERR_COPY           EQU 1     ; the Snip could not go on the clipboard
+ERR_CLIPBOARD_BUSY EQU 2     ; the clipboard is held by another application
+ERR_SAVE           EQU 3     ; the Snip could not be written
+ERR_STARTUP        EQU 4     ; COM or the WIC factory is unavailable (fatal)
+ERR_SHELL          EQU 5     ; the Shell window could not be created (fatal)
+ERR_LAST           EQU ERR_SHELL
+
 ENDIF

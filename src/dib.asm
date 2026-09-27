@@ -15,7 +15,7 @@
 ;
 ; dib_crop is atomic. It builds the new Snip in a local and only frees the old
 ; one once the new one exists, so a failed capture leaves the Editor showing the
-; previous Snip instead of a wrecked one (ticket 11).
+; previous Snip instead of a wrecked one; select.asm reports the failure.
 ;
 ; See docs/capture.md.
 

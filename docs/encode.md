@@ -67,6 +67,11 @@ handle: `SetClipboardData` takes `GlobalSize` as the format length, and the
 stream's handle carries allocator slack. Ownership of each handle passes to the
 clipboard on a successful `SetClipboardData`.
 
+**Failures go to the caller.** `encode_init` returns a `BOOL`; `encode_file` and
+`encode_clipboard` return an `HRESULT` and never touch the UI. `editor.asm` reports them through
+`err.asm`; a clipboard another window holds comes back as `CLIPBRD_E_CANT_OPEN`, which Copy
+maps to its own message. See [`docs/errors.md`](errors.md).
+
 **Save As is the common dialog.** `editor_save` fills an `OPENFILENAMEW`
 (PNG filter first, default name `Capture.png`, default extension `png`,
 `OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_EXPLORER`) and calls
@@ -120,6 +125,7 @@ Editor's client area is the toolbar
 - [`docs/capture.md`](capture.md) — the Snip representation the encoder reads.
 - [`docs/shell.md`](shell.md) — the other stock-control window.
 - [`docs/build.md`](build.md) — the libraries and the size build.
+- [`docs/errors.md`](errors.md) — how a failed Copy or Save is reported.
 - [`docs/adr/0002-x86-for-crinkler.md`](adr/0002-x86-for-crinkler.md) — why x86, and the Crinkler constraints.
 - [`docs/research/png-encoding-com.md`](research/png-encoding-com.md) — the WIC-over-GDI+ decision.
 - [Ticket 05](../.scratch/asm-snip-build/issues/05-copy-save-as.md).

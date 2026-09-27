@@ -19,9 +19,9 @@
 ; build's Crinkler reads the exporting DLL's file. combase.dll is the real
 ; implementation and exports them directly. See docs/encode.md and docs/build.md.
 ;
-; Failure is an HRESULT, not a message box: ticket 11 owns the error surface.
-; Nothing here exits the process, and encode_init's failure just leaves Copy and
-; Save broken until 11 reports it.
+; Failure is an HRESULT, not a message box: the caller (editor.asm) reports it
+; through err.asm. Nothing here exits the process; encode_init's failure is the
+; one startup error snip.asm reports before exiting.
 
 .386
 .model flat, stdcall
@@ -326,7 +326,10 @@ encode_clipboard PROC USES ebx snip:DWORD
     ; --- publish -------------------------------------------------------------
     INVOKE OpenClipboard, 0
     test eax, eax
-    jz   ec_cleanup
+    jnz  ec_open
+    mov  hr, CLIPBRD_E_CANT_OPEN     ; another window holds the clipboard
+    jmp  ec_cleanup
+ec_open:
     mov  clipOpen, 1
     INVOKE EmptyClipboard
 

@@ -108,7 +108,8 @@ land the Editor's own pixels in the Snip. Between the hide and the restore,
   the Overlay should cost the user nothing, not leave them with no window at all.
 - **`dib_crop` runs before `sel_restore`, never after.** The capture must happen
   while the Shell and Editor are hidden. `dib_crop` is atomic, so a failed
-  capture leaves the previous Snip (and the Editor showing it) intact.
+  capture leaves the previous Snip (and the Editor showing it) intact, and
+  `select_finish` reports it once the Shell is back (see [`docs/errors.md`](errors.md)).
 - **The Selection is virtual-relative until the handoff.** Pointer messages carry
   the Overlay's client coordinates, whose origin is the virtual-screen origin, not
   the desktop's. `select_finish` adds the virtual origin exactly once, so capture

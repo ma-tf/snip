@@ -23,8 +23,8 @@
 ;
 ; Copy and Save As hand the live Snip to encode.asm; nothing is re-captured. The
 ; annotations are already in the Working bitmap by then, so Copy and Save carry
-; them for free. A failure is silently ignored here - ticket 11 owns the error
-; surface.
+; them for free. A failure aborts the operation and reports through err.asm; the
+; Editor stays open so the user can retry.
 ;
 ; See docs/capture.md, docs/encode.md, and docs/ink.md.
 
@@ -277,13 +277,24 @@ editor_set_tool ENDP
 
 ; ---------------------------------------------------------------------------
 ; editor_copy(App *app) - put the live Snip on the clipboard through encode.asm.
-; A failure is silent; ticket 11 adds the message.
+; A failure reports at the point of failure: a clipboard another window holds
+; gets its own message, anything else a generic copy failure. Nothing exits.
 ; ---------------------------------------------------------------------------
 editor_copy PROC app:DWORD
     INVOKE dib_snip
     cmp  [eax].Snip.w, 1
     jl   ecp_done
     INVOKE encode_clipboard, eax
+    mov  ecx, ERR_COPY
+    test eax, eax
+    jns  ecp_done
+    cmp  eax, CLIPBRD_E_CANT_OPEN
+    jne  ecp_show
+    mov  ecx, ERR_CLIPBOARD_BUSY
+ecp_show:
+    mov  eax, app
+    mov  eax, [eax].App.hwndEditor
+    INVOKE err_show, eax, ecx
 ecp_done:
     ret
 editor_copy ENDP
@@ -315,10 +326,25 @@ editor_save PROC USES ebx esi edi app:DWORD
 
     INVOKE GetSaveFileNameW, OFFSET ed_ofn
     test eax, eax
-    jz   esv_done
+    jnz  esv_encode
 
+    ; 0 is either a cancel or a dialog error; CommDlgExtendedError tells them
+    ; apart. A cancel is silent; a real dialog failure is reported like any save.
+    INVOKE CommDlgExtendedError
+    test eax, eax
+    jz   esv_done
+    jmp  esv_fail
+
+esv_encode:
     INVOKE dib_snip
     INVOKE encode_file, eax, OFFSET ed_file
+    test eax, eax
+    jns  esv_done
+
+esv_fail:
+    mov  eax, app
+    mov  eax, [eax].App.hwndEditor
+    INVOKE err_show, eax, ERR_SAVE
 
 esv_done:
     ret

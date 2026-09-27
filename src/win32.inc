@@ -88,6 +88,12 @@ SetClipboardData              PROTO STDCALL :DWORD, :DWORD
 CloseClipboard                PROTO STDCALL
 RegisterClipboardFormatW      PROTO STDCALL :DWORD
 
+; ticket 11: the error surface. MessageBoxW is the whole of it; CLIPBRD_E_CANT_OPEN
+; is the clipboard-in-use HRESULT the caller synthesises when OpenClipboard
+; returns FALSE (OpenClipboard itself returns a BOOL, not an HRESULT).
+MessageBoxW          PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+CLIPBRD_E_CANT_OPEN  EQU 800401D0h
+
 ; ticket 08: window capture and window-mode hit-testing.
 PrintWindow      PROTO STDCALL :DWORD, :DWORD, :DWORD     ; (hwnd, hdcBlt, flags)
 GetWindowRect    PROTO STDCALL :DWORD, :DWORD             ; (hwnd, RECT*)
@@ -214,6 +220,10 @@ IDC_ARROW           EQU 7F00h          ; 32512, an HCURSOR ordinal
 IDC_CROSS           EQU 7F03h          ; 32515, the crosshair
 COLOR_WINDOW_1      EQU 6              ; (COLOR_WINDOW + 1), a valid pseudo-HBRUSH
 DEFAULT_GUI_FONT    EQU 17
+
+; MessageBoxW styles (ticket 11). MB_ICONERROR == MB_ICONHAND.
+MB_OK               EQU 0
+MB_ICONERROR        EQU 00000010h
 
 WM_CREATE           EQU 0001h
 WM_DESTROY          EQU 0002h

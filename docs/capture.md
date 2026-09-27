@@ -56,7 +56,7 @@ A `PrintWindow` result counts only if `cap_content` finds a non-zero colour byte
 an all-black bitmap advances to the next path. The final blit is *not* tested: a
 black-but-successful capture is a documented limitation, not a detected error. If
 every path fails, `capture_window` returns 0 and `dib_build` leaves the previous
-Snip intact (ticket 11 surfaces the message).
+Snip intact; `select_finish` reports it (see [`docs/errors.md`](errors.md)).
 
 **`PrintWindow` runs off the UI thread.** It is documented as blocking and runs
 the target app's code, so one attempt runs on a `CreateThread` worker that the UI
@@ -111,8 +111,8 @@ Eraser and Undo rely on (ticket 06).
 **The crop is atomic.** `dib_crop` builds the new Snip in a stack local and only
 frees the previous one once the new one exists. A failed capture therefore leaves
 the Editor pointing at the Snip it already had, rather than a freed bitmap — the
-"Editor stays open and retryable" requirement ticket 11 will surface with a
-message.
+"Editor stays open and retryable" requirement, reported by `select_finish` through
+[`docs/errors.md`](errors.md).
 
 **The Editor is created once and reused.** `editor_open` reuses
 `App.hwndEditor` if it exists, so the second snip onward only repaints — and

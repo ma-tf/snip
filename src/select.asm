@@ -654,7 +654,8 @@ sel_lup ENDP
 ; Order matters. The capture must happen while the Shell and Editor are still
 ; hidden (they were hidden at begin), or a re-shown window could land in the
 ; Snip. dib_crop is atomic, so a failed capture leaves any previous Snip - and
-; the Editor showing it - intact; the visible error surface is ticket 11.
+; the Editor showing it - intact; select_finish reports the failure once the
+; Shell is back and lets the user retry.
 ; ---------------------------------------------------------------------------
 select_finish PROC USES ebx esi
     LOCAL p:DWORD
@@ -707,8 +708,16 @@ sf_cropped:
     mov  sel_live, 0
 
     test ebx, ebx
-    jz   sf_done
+    jz   sf_failed
     INVOKE editor_open, esi
+    ret
+
+sf_failed:
+    ; The crop failed. dib is atomic, so the previous Snip and its Editor are
+    ; untouched and the Shell is already back: report at the point of failure
+    ; and let the user retry. Nothing is re-captured or left half-built.
+    mov  eax, [esi].App.hwndShell
+    INVOKE err_show, eax, ERR_CAPTURE
 
 sf_done:
     ret

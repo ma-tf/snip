@@ -52,9 +52,12 @@ WinMainASM PROC
     INVOKE InitCommonControlsEx, OFFSET icce
 
     ; COM + the WIC factory, for Copy and Save As (ticket 05). One apartment and
-    ; one factory for the life of the process. Ticket 11 turns a failure here
-    ; into a message and a clean exit; for now Copy/Save simply fail.
+    ; one factory for the life of the process. Ticket 11: this is the one
+    ; unrecoverable startup failure - report it and exit cleanly, before any
+    ; window exists.
     INVOKE encode_init
+    test eax, eax
+    jz   startup_fail
 
     ; GDI+, for the Editor's antialiased Pen and Highlighter (ticket 06). A
     ; failure just leaves the annotation buttons inert, like WIC above.
@@ -68,7 +71,7 @@ WinMainASM PROC
     INVOKE shell_create, OFFSET app
     mov  app.hwndShell, eax
     test eax, eax
-    jz   done
+    jz   shell_fail
 
     ; Message pump
 msg_loop:
@@ -78,6 +81,17 @@ msg_loop:
     INVOKE TranslateMessage, OFFSET msg
     INVOKE DispatchMessageW, OFFSET msg
     jmp  msg_loop
+
+; encode_init failed: no window was ever created, so the box has no owner and
+; there is nothing left to do but leave. A nonzero exit code records the cause.
+startup_fail:
+    INVOKE err_show, 0, ERR_STARTUP
+    INVOKE ExitProcess, 1
+
+; shell_create failed: an unrecoverable startup failure like the one above.
+shell_fail:
+    INVOKE err_show, 0, ERR_SHELL
+    INVOKE ExitProcess, 1
 
 done:
     INVOKE ExitProcess, 0

@@ -23,7 +23,8 @@ The eventual areas, in the order the spec names them: `snip` (entry and process 
 `encode`. Ticket 06 added an eleventh, `ink` — the annotation engine, kept out of `editor` so
 the command log and the window chrome change for their own reasons. **Landed so far:** `snip`,
 `shell`, `geometry`, `capture`, `dib`, `overlay`, `select`, `editor`, `encode`, `ink`, and now
-`mask` (ticket 07). Modules land as their tickets do; the build has no list to update.
+`mask` (ticket 07), and `err` (ticket 11). Modules land as their tickets do; the build has no
+list to update.
 
 ## Where it lives
 
@@ -130,6 +131,13 @@ scratch bitmap whose alpha is the per-pixel coverage and applies it to the Snip.
 forgives a self-crossing loop; the Overlay previews the same edge antialiased. See
 [`docs/freeform.md`](freeform.md).
 
+**A failure reports, it does not crash.** `err.asm` is the whole error surface: one
+`err_show(hwnd, id)` helper and the app's messages. The module that owns the operation reports
+at the point of failure, so `encode.asm` and `dib.asm` stay UI-free and return their `HRESULT`
+or `BOOL`. A failed capture leaves the previous Snip intact and the Editor open; only a startup
+failure (COM, the WIC factory, or the Shell window unavailable) ends the process. See
+[`docs/errors.md`](errors.md).
+
 **Returns.** `eax` 0/nonzero for our own functions; Win32 `BOOL`/`HRESULT` values pass through
 untouched.
 
@@ -169,6 +177,7 @@ the linked build small and the Crinkler `size` build smaller still; see
 - [The Editor view](editor.md) — resizing, fit-to-window, and the client→Snip mapping.
 - [Copy and Save As](encode.md) — WIC encoding, the clipboard formats, and the Save dialog.
 - [Ink](ink.md) — the annotation model, the command log, and the Eraser and Undo.
+- [Errors](errors.md) — the message-box error surface and which failures are fatal.
 - [DPI and multi-monitor](multimonitor.md) — coordinate spaces, the re-read rules, and the
   Overlay's DPI-scaled chrome.
 - [`CONTEXT.md`](../CONTEXT.md) — the vocabulary the code and the tickets share.
