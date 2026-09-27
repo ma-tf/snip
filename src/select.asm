@@ -8,8 +8,11 @@
 ;
 ; Ticket 02 is rectangular only. Ticket 07 added the free-form gesture and the
 ; mode dispatch; ticket 08 added the window gesture; ticket 09 adds full-screen,
-; the monitor under the pointer. Each mode gets its own branch rather than
-; falling through to the drag handler (see the prototype's bug 2).
+; the monitor under the pointer. Ticket 10 puts the Delay between New and the
+; raise: select_begin hides our windows, waits App.delay milliseconds with a
+; plain Sleep, then raises the Overlay - so the wait is mode-independent and the
+; desktop is clear while the user arranges. Each mode gets its own branch rather
+; than falling through to the drag handler (see the prototype's bug 2).
 ;
 ; The live state is module-private: a session is a singleton, like the Shell.
 ; When the Selection completes, select_finish drives the handoff: the Selection
@@ -55,6 +58,12 @@ cls_workerw  DW 'W','o','r','k','e','r','W',0
 cls_tray     DW 'S','h','e','l','l','_','T','r','a','y','W','n','d',0
 cls_tray2    DW 'S','h','e','l','l','_','S','e','c','o','n','d','a','r','y','T','r','a','y','W','n','d',0
 
+; The Delay drop-down's values in milliseconds, indexed by App.delay (an index
+; into this table, not a duration). No delay is a real zero so the wait is
+; skipped rather than a Sleep(0).
+delay_ms     DWORD 0, 3000, 5000, 10000
+DELAY_LAST   EQU 3                     ; the last index; anything higher clamps down to No delay (0)
+
 ; ---------------------------------------------------------------------------
 ; Session state. Zero-initialised, so .data? (.bss): no file bytes.
 ;
@@ -69,7 +78,7 @@ sel_live   DWORD ?          ; 1 while a session is in flight, else 0
 sel_down   DWORD ?          ; 1 while the left button is held
 sel_mode   DWORD ?          ; the mode the session was started with
 sel_dpi    DWORD ?          ; the Overlay's effective DPI; scales the free-form sample threshold
-sel_vx     SDWORD ?         ; the virtual-screen origin, read at session start
+sel_vx     SDWORD ?         ; the virtual-screen origin, read after the Delay
 sel_vy     SDWORD ?
 sel_hwnd   DWORD ?          ; window mode: the top-level window under the cursor
 sel_has    DWORD ?          ; window / full-screen: 1 when the highlight is capturable
@@ -82,9 +91,9 @@ sel_rect   Rect <>          ; the Selection so far, in Overlay client pixels
 
 ; ---------------------------------------------------------------------------
 ; select_begin(App *app) -> BOOL in eax (nonzero on success).
-; New was clicked. Hide the Shell, then raise the Overlay. If the Overlay will
-; not come up the Shell is restored, so a failed session costs the user
-; nothing. Already-live is a no-op, not an error.
+; New was clicked. Hide the Shell, wait out the Delay, then raise the Overlay.
+; If the Overlay will not come up the Shell is restored, so a failed session
+; costs the user nothing. Already-live is a no-op, not an error.
 ; ---------------------------------------------------------------------------
 select_begin PROC USES ebx esi edi app:DWORD
     mov  esi, app
@@ -110,14 +119,6 @@ sb_mode_ok:
     mov  sel_rect.right, 0
     mov  sel_rect.bottom, 0
 
-    ; The Overlay's client space *is* the virtual screen, so the pointer's client
-    ; coordinates are virtual-relative. The origin is read fresh here, at session
-    ; start - never cached from process startup - and applied once at the handoff.
-    INVOKE GetSystemMetrics, SM_XVIRTUALSCREEN
-    mov  sel_vx, eax
-    INVOKE GetSystemMetrics, SM_YVIRTUALSCREEN
-    mov  sel_vy, eax
-
     mov  sel_app, esi
 
     ; The Shell goes away for the duration: it must never sit under the dim or
@@ -129,10 +130,36 @@ sb_mode_ok:
 
     mov  edi, [esi].App.hwndEditor
     test edi, edi
-    jz   sb_raise
+    jz   sb_delay
     INVOKE ShowWindow, edi, SW_HIDE
 
+sb_delay:
+    ; Ticket 10: the Delay drop-down. Our windows are already hidden, so the
+    ; user can open a menu or set up hover state during the wait. The spec chose
+    ; a plain Sleep: the UI thread is ours to block, and the only windows it
+    ; would otherwise serve are gone. App.delay is an index, not a duration.
+    mov  eax, [esi].App.delay
+    cmp  eax, DELAY_LAST
+    jbe  sb_delay_ok
+    xor  eax, eax                 ; a bad index means No delay, never a branch
+sb_delay_ok:
+    mov  eax, delay_ms[eax*4]
+    test eax, eax
+    jz   sb_raise
+    INVOKE Sleep, eax
+
 sb_raise:
+    ; The Overlay's client space *is* the virtual screen, so the pointer's client
+    ; coordinates are virtual-relative. The origin is read AFTER the delay, never
+    ; cached from process startup: a topology change during the wait cannot
+    ; arrive as a message (the pump is blocked), so re-reading live is what keeps
+    ; this in step with the geometry overlay_show reads a moment later. Applied
+    ; once, at the handoff.
+    INVOKE GetSystemMetrics, SM_XVIRTUALSCREEN
+    mov  sel_vx, eax
+    INVOKE GetSystemMetrics, SM_YVIRTUALSCREEN
+    mov  sel_vy, eax
+
     INVOKE overlay_show, esi, sel_mode
     test eax, eax
     jz   sb_fail

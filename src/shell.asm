@@ -46,6 +46,9 @@ mode_win      DW 'W','i','n','d','o','w',0
 mode_full     DW 'F','u','l','l',' ','s','c','r','e','e','n',0
 mode_free     DW 'F','r','e','e','f','o','r','m',0
 
+; The Delay rows, in order. The row index is App.delay, and select.asm's
+; delay_ms table must agree with this list row for row; adding a value here means
+; adding its milliseconds there too.
 delay_none    DW 'N','o',' ','d','e','l','a','y',0
 delay_3       DW '3',' ','s','e','c','o','n','d','s',0
 delay_5       DW '5',' ','s','e','c','o','n','d','s',0

@@ -80,6 +80,13 @@ the Overlay class's WndProc. `select` calls into
 `overlay` and never the reverse. `geometry.asm` holds the crop maths Win32-free. See
 [`docs/overlay.md`](overlay.md) and [`docs/select.md`](select.md).
 
+**The Delay is a Sleep between New and the Overlay.** `App.delay` is the Delay drop-down's
+index; `select_begin` maps it to milliseconds (No delay / 3 / 5 / 10 seconds) and calls
+`Sleep` after hiding our windows and before raising the Overlay — so the wait is
+mode-independent and the desktop is clear while the user arranges. It is a plain `Sleep`, which
+blocks the UI thread; the only windows that thread would serve are already hidden. See
+[`docs/delay.md`](delay.md).
+
 **A completed Selection becomes a Snip, then the Editor opens.** `select_finish` runs the
 handoff in order: `dib_crop` blits the Selection's region straight off the screen
 (`capture.asm`) into an owned 32bpp straight-BGRA bitmap with a Pristine twin, then
@@ -155,6 +162,7 @@ the linked build small and the Crinkler `size` build smaller still; see
 - [The Shell](shell.md) — the window, the ComboBoxEx controls, and the drawn icons.
 - [The Overlay](overlay.md) — the layered surface, the dim, and the readout chrome.
 - [The Selection](select.md) — the Snipping session and the drag state machine.
+- [The Delay](delay.md) — the wait between New and the Overlay.
 - [Free-form snips](freeform.md) — the Trace geometry and the coverage Mask.
 - [The Snip and the capture path](capture.md) — the region blit, alpha synthesis, and the
   Editor window.

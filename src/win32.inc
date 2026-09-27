@@ -29,6 +29,9 @@ GlobalLock       PROTO STDCALL :DWORD
 GlobalUnlock     PROTO STDCALL :DWORD
 GlobalFree       PROTO STDCALL :DWORD
 
+; ticket 10: the Delay setting waits on the UI thread before the Overlay.
+Sleep            PROTO STDCALL :DWORD
+
 ; ticket 08: run a blocking PrintWindow on a worker thread and bound the wait.
 CreateThread         PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 WaitForSingleObject  PROTO STDCALL :DWORD, :DWORD

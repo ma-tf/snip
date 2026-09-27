@@ -27,11 +27,18 @@ surface and this is the behaviour that runs on it.
 ## How it works
 
 **A session is a small state machine.** `select_begin` (New) hides the Shell and the Editor,
-then raises the Overlay through `overlay_show`. `sel_ldown` anchors the drag and calls
-`SetCapture`, so tracking survives the pointer leaving the window. `sel_mmove` re-normalises
-the rectangle and repaints. `sel_lup` finishes the session or ignores a stray click.
-`select_cancel` ends it with nothing recorded. `select_finish` ends it by cropping the
+waits out the Delay, then raises the Overlay through `overlay_show`. `sel_ldown` anchors the
+drag and calls `SetCapture`, so tracking survives the pointer leaving the window. `sel_mmove`
+re-normalises the rectangle and repaints. `sel_lup` finishes the session or ignores a stray
+click. `select_cancel` ends it with nothing recorded. `select_finish` ends it by cropping the
 Selection into a Snip and opening the Editor.
+
+**The Delay is a Sleep between the hide and the raise.** `App.delay` is the Delay drop-down's
+index; `select_begin` maps it through a table (No delay / 3 / 5 / 10 seconds) and calls `Sleep`
+before `overlay_show`. The wait sits after the hide, so the desktop is clear for the user to
+open a menu or arrange hover state, and before the mode dispatch, so it applies to all four
+modes. It is a plain `Sleep`, blocking the UI thread: the only windows that thread would serve
+are already hidden. See [`docs/delay.md`](delay.md).
 
 **Capture, not hover.** `SetCapture` on mouse-down and `ReleaseCapture` on
 release is what makes a drag that runs off the Overlay still track. Without it a
@@ -116,6 +123,7 @@ land the Editor's own pixels in the Snip. Between the hide and the restore,
 ## See also
 
 - [`docs/overlay.md`](overlay.md) — the surface this drives.
+- [`docs/delay.md`](delay.md) — the wait between New and the Overlay.
 - [`docs/freeform.md`](freeform.md) — the Trace gesture and the coverage Mask.
 - [`docs/multimonitor.md`](multimonitor.md) — coordinate spaces and the topology/DPI rules.
 - [`docs/capture.md`](capture.md) — what `select_finish` hands the Selection to.
