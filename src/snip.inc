@@ -140,15 +140,28 @@ mask_degenerate PROTO STDCALL                              ; BOOL mask_degenerat
 
 ; capture.asm - screen capture. Ticket 03 blits the Selection's region straight
 ; from the screen DC into a caller's bitmap; ticket 08 adds the PrintWindow path
-; for window mode. It owns no state between calls.
+; for window mode. It owns no state between calls, save a lazily resolved DWM
+; entry point.
 ;
 ; The Rect arrives in SCREEN physical pixels - the caller has already added the
 ; virtual-screen origin - so capture never assumes the desktop starts at (0,0).
 capture_region PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; BOOL capture_region(Rect *sel, DWORD hdcDst, DWORD w, DWORD h)
+; BOOL capture_window(HWND hwnd, Rect *sel, DWORD hdcDst, DWORD w, DWORD h, DWORD bits)
+;   PrintWindow(PW_RENDERFULLCONTENT) off the UI thread, then the same without the
+;   flag, then a screen blit of *sel (SCREEN pixels); `bits` is the Snip's pixels,
+;   for the all-black test. Returns nonzero if any attempt produced a bitmap.
+capture_window PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+; BOOL window_frame(HWND hwnd, Rect *out) - the top-level frame in SCREEN pixels,
+;   DWMWA_EXTENDED_FRAME_BOUNDS with a GetWindowRect fallback. Used by select.asm
+;   for the hover highlight and handed to capture_window for the blit fallback.
+window_frame   PROTO STDCALL :DWORD, :DWORD
 
 ; dib.asm - the Snip: ownership, alpha synthesis, and the Pristine twin. The
 ; crop maths stays in geometry.asm; this module is the impure DIB plumbing.
 dib_crop PROTO STDCALL :DWORD   ; BOOL dib_crop(Rect *sel) - SCREEN pixels; atomic: a failure keeps the old Snip
+; BOOL dib_crop_window(Rect *sel, HWND hwnd) - the same, filled by PrintWindow
+; instead of the region blit. SCREEN pixels; atomic like dib_crop.
+dib_crop_window PROTO STDCALL :DWORD, :DWORD
 dib_crop_free PROTO STDCALL :DWORD, :DWORD, :DWORD  ; BOOL dib_crop_free(Rect *bbox, Pt *path, DWORD n) - free-form cut; SCREEN pixels
 dib_snip PROTO STDCALL          ; Snip *dib_snip(void)
 

@@ -19,10 +19,10 @@ read the Snip.
 
 | File | Owns |
 | --- | --- |
-| `src/capture.asm` | `capture_region` — the screen blit. No state between calls. |
+| `src/capture.asm` | `capture_region` — the screen blit — plus `capture_window` and `window_frame` — the `PrintWindow` render and the window frame. |
 | `src/dib.asm` | The Snip: allocation, the crop, alpha synthesis, the Pristine twin. |
 | `src/editor.asm` | The Editor window: create-once, fit-to-Snip, the paint path. |
-| `src/select.asm` | `select_finish` — the order of operations that drives all three. |
+| `src/select.asm` | `select_finish` — the order of operations that drives all three, and the window-mode hover. |
 
 `Snip` is declared in `src/snip.inc`; `dib.asm` owns the one live instance and
 `editor.asm` reads it through `dib_snip`. The crop maths stays in `geometry.asm`,
@@ -39,6 +39,47 @@ boundary (see [`docs/multimonitor.md`](multimonitor.md)) — and negative source
 coordinates are accepted, so the source rectangle lines up with no arithmetic and
 the ~30 MB intermediate a blit-then-crop would hold never exists. That is a
 refinement of ADR-0001, not a reversal: a Snip still owns its pixels outright.
+
+**Window mode is a different fill, not a different Snip.** A window snip is the
+same owned, opaque, Pristine-twinned Snip as a rectangular one; only the way
+Working is filled changes. `capture_window` tries three paths, in order:
+
+1. `PrintWindow(hwnd, hdc, PW_RENDERFULLCONTENT)` — renders the whole top-level
+   window, including DirectComposition content. Without the flag a composited
+   window comes back as an all-black rectangle.
+2. `PrintWindow(hwnd, hdc, 0)` — for the occasional app that answers a plain
+   `WM_PRINT` but not the full-content path.
+3. A screen blit of the frame rectangle (`capture_region`) — the guaranteed path,
+   accepted **even if it is black**.
+
+A `PrintWindow` result counts only if `cap_content` finds a non-zero colour byte;
+an all-black bitmap advances to the next path. The final blit is *not* tested: a
+black-but-successful capture is a documented limitation, not a detected error. If
+every path fails, `capture_window` returns 0 and `dib_build` leaves the previous
+Snip intact (ticket 11 surfaces the message).
+
+**`PrintWindow` runs off the UI thread.** It is documented as blocking and runs
+the target app's code, so one attempt runs on a `CreateThread` worker that the UI
+thread `WaitForSingleObject`s with a 2-second timeout. On a timeout the worker is
+`TerminateThread`'d, then waited on until its handle signals — so it is provably
+no longer writing the DC — and closed; the second `PrintWindow` variant is *not*
+tried, because a target that hangs one hangs both, and the chain goes straight to
+the screen blit. That bounds a frozen Overlay at about two seconds.
+
+**The frame excludes the invisible Win11 resize border.** `window_frame` prefers
+`DwmGetWindowAttribute(DWMWA_EXTENDED_FRAME_BOUNDS)` and falls back to
+`GetWindowRect` for the windows DWM refuses (some popups and layered windows).
+`DwmGetWindowAttribute` is resolved from `dwmapi.dll` at runtime, the same
+Crinkler-safe pattern `encode.asm` uses for COM, so no import library is added.
+
+**Window mode highlights as it moves; a click captures.** `select_hover` runs on
+every `WM_MOUSEMOVE`, resolves the top-level window with `WindowFromPoint` +
+`GetAncestor(GA_ROOT)`, and reuses the Overlay's existing hole-punch so the
+hovered window is the undimmed region — no new Overlay code. It repaints only when
+the resolved window changes. The Overlay is flipped `WS_EX_TRANSPARENT` around the
+hit-test so `WindowFromPoint` does not return the Overlay itself. The desktop,
+the shell window, the wallpaper host, the taskbars, and minimised windows are
+rejected, so the dim holds over them.
 
 **The width is inclusive.** A drag from (100,100) to (500,400) is a 401×301
 snip, not 400×300. `geo_width`/`geo_height` return the span, and `dib_crop` adds
@@ -95,6 +136,17 @@ top-left corner shows. Scaling would misrepresent what Copy will publish.
 - **Off-desktop captures are black, not an error.** `BitBlt` accepts source
   coordinates outside the desktop and the off-desktop part reads back black. A
   Selection at a virtual-screen edge is therefore a valid, if partly black, snip.
+- **`PrintWindow` can return real, non-black pixels that are still not what is on
+  screen.** A WinForms window, for instance, prints as its default face colour
+  rather than the colour it shows. The all-black test only rejects a composited
+  window's black rectangle; it cannot detect "rendered, but wrong". The screen
+  blit stays as the fallback for exactly this reason.
+- **`window_frame` returns screen pixels; the Overlay works in client pixels.**
+  `select_finish` adds the virtual-screen origin once, the same as for a
+  rectangular Selection, so a window snip on a monitor left of the primary lands
+  in the right place.
+- **`window_frame`'s parameter cannot be called `out`.** `out` is a MASM
+  instruction (`A2008`), so the parameter is `frame`.
 - **The Overlay is not in the snip only because it excludes itself.** If that
   `SetWindowDisplayAffinity` call is ever removed, the dim appears in every snip.
   See [`docs/overlay.md`](overlay.md).

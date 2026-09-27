@@ -84,7 +84,9 @@ handoff in order: `dib_crop` blits the Selection's region straight off the scree
 (`capture.asm`) into an owned 32bpp straight-BGRA bitmap with a Pristine twin, then
 `sel_restore` brings the Shell and Editor back, then `editor_open` sizes and shows the
 Editor. The capture happens while both our windows are hidden, so neither lands in the snip;
-the region blit means no full-screen buffer is ever held. See
+the region blit means no full-screen buffer is ever held. Window mode swaps the region blit
+for `PrintWindow(PW_RENDERFULLCONTENT)` off the UI thread with a timeout, then a plain
+`PrintWindow`, then the region blit as the last resort. See
 [`docs/capture.md`](capture.md).
 
 **The desktop is not one monitor at (0,0).** A Selection is virtual-relative — the

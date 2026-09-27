@@ -29,6 +29,13 @@ GlobalLock       PROTO STDCALL :DWORD
 GlobalUnlock     PROTO STDCALL :DWORD
 GlobalFree       PROTO STDCALL :DWORD
 
+; ticket 08: run a blocking PrintWindow on a worker thread and bound the wait.
+CreateThread         PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+WaitForSingleObject  PROTO STDCALL :DWORD, :DWORD
+GetExitCodeThread    PROTO STDCALL :DWORD, :DWORD
+TerminateThread      PROTO STDCALL :DWORD, :DWORD
+CloseHandle          PROTO STDCALL :DWORD
+
 ; ---------------------------------------------------------------------------
 ; ole32 is not bound statically. Its COM entry points are forwards to
 ; api-ms-win-core-com-l1-1-0, an API-set name with no file on disk; the ordinary
@@ -77,6 +84,20 @@ EmptyClipboard                PROTO STDCALL
 SetClipboardData              PROTO STDCALL :DWORD, :DWORD
 CloseClipboard                PROTO STDCALL
 RegisterClipboardFormatW      PROTO STDCALL :DWORD
+
+; ticket 08: window capture and window-mode hit-testing.
+PrintWindow      PROTO STDCALL :DWORD, :DWORD, :DWORD     ; (hwnd, hdcBlt, flags)
+GetWindowRect    PROTO STDCALL :DWORD, :DWORD             ; (hwnd, RECT*)
+GetClassNameW    PROTO STDCALL :DWORD, :DWORD, :SDWORD
+GetDesktopWindow PROTO STDCALL
+GetShellWindow   PROTO STDCALL
+IsIconic         PROTO STDCALL :DWORD
+; WindowFromPoint(POINT point) takes the POINT BY VALUE. Declared here as two
+; SDWORDs and called WindowFromPoint(x, y): the two 4-byte pushes are the same
+; 8 stack bytes as POINT{x,y}, which is how MASM marshals a by-value struct.
+; (POINT is declared further down; a PROTO cannot name it before it exists.)
+WindowFromPoint  PROTO STDCALL :SDWORD, :SDWORD
+GetAncestor      PROTO STDCALL :DWORD, :DWORD             ; (hwnd, GA_ROOT)
 
 ; ---------------------------------------------------------------------------
 ; comdlg32 - the standard Save As dialog (ticket 05).
@@ -287,6 +308,15 @@ SmoothingModeAntiAlias   EQU 4            ; GDI+ antialiased rasterisation
 UnitPixel                EQU 2            ; a pen width is in device pixels
 LineCapRound             EQU 2            ; round caps, so a stroke has soft ends
 LineJoinRound            EQU 2            ; round joins, so joints don't spike
+
+; --- ticket 08: window capture ---------------------------------------------
+PW_RENDERFULLCONTENT    EQU 2            ; render DirectComposition content (undocumented, in the SDK header)
+PW_CLIENTONLY           EQU 1            ; we want the whole window, so this is NOT used
+GWL_EXSTYLE             EQU -20          ; Get/SetWindowLongW index
+DWMWA_EXTENDED_FRAME_BOUNDS EQU 9        ; the visible frame, excluding the invisible resize border
+WAIT_OBJECT_0           EQU 0            ; WaitForSingleObject: the thread signalled
+WAIT_TIMEOUT            EQU 258          ; WaitForSingleObject: the wait elapsed
+CAP_TIMEOUT_MS          EQU 2000         ; how long the UI thread waits on a PrintWindow worker
 
 ; --- ticket 07: GDI+ path and pixel-format constants -----------------------
 FillModeWinding          EQU 1            ; nonzero fill: a self-crossing loop fills

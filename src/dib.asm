@@ -2,10 +2,11 @@
 ; The Snip: the captured region owned as one cropped 32bpp straight-BGRA DIB,
 ; with a Pristine twin.
 ;
-; A Snip is made in one shot: allocate Working and Pristine, blit the Selection
-; straight from the screen into Working (capture.asm), force alpha to 255, and
-; copy Working into Pristine. No full-screen buffer is ever held, and no Snip
-; aliases another surface - it owns its pixels outright (ADR-0001).
+; A Snip is made in one shot: allocate Working and Pristine, fill Working from
+; the Selection - a screen blit for rect/free-form, PrintWindow for window mode
+; (capture.asm) - synthesise alpha, and copy Working into Pristine. No
+; full-screen buffer is ever held, and no Snip aliases another surface - it owns
+; its pixels outright (ADR-0001).
 ;
 ; Alpha is synthesised because the screen DC supplies none: GDI blits colour,
 ; leaves the alpha byte as the destination had it. Straight BGRA with a real
@@ -26,11 +27,12 @@ include snip.inc
 include win32.inc
 
 PUBLIC dib_crop
+PUBLIC dib_crop_window
 PUBLIC dib_crop_free
 PUBLIC dib_snip
 
 ; Forward declarations so INVOKE reaches callees defined later in the file.
-dib_build PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; BOOL dib_build(Snip *sn, DWORD w, DWORD h, Rect *sel) - alloc + capture
+dib_build PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD  ; BOOL dib_build(Snip *sn, DWORD w, DWORD h, Rect *sel, DWORD hwnd) - alloc + capture
 dib_fill_opaque PROTO STDCALL :DWORD                    ; void dib_fill_opaque(Snip *sn) - alpha 255, the binary case
 dib_coverage PROTO STDCALL :DWORD, :DWORD, :DWORD       ; BOOL dib_coverage(Snip *sn, Pt *path, DWORD n) - the free-form mask
 dib_mirror PROTO STDCALL :DWORD                         ; void dib_mirror(Snip *sn) - Working -> Pristine
@@ -73,7 +75,7 @@ dib_crop PROC USES ebx esi edi sel:DWORD
     cmp  h, 1
     jl   dc_fail
 
-    INVOKE dib_build, ADDR tmp, w, h, sel
+    INVOKE dib_build, ADDR tmp, w, h, sel, 0
     test eax, eax
     jz   dc_fail
 
@@ -88,6 +90,44 @@ dc_fail:
     xor  eax, eax
     ret
 dib_crop ENDP
+
+; ---------------------------------------------------------------------------
+; dib_crop_window(Rect *sel, DWORD hwnd) -> BOOL in eax. The same build and the
+; same atomic replace as dib_crop, but Working is filled by PrintWindow (with the
+; region blit as its fallback) instead of the screen blit. A window Snip is
+; opaque everywhere, so alpha is forced to 255 like a rectangular one.
+; ---------------------------------------------------------------------------
+dib_crop_window PROC USES ebx esi edi sel:DWORD, hwnd:DWORD
+    LOCAL tmp:Snip
+    LOCAL w:DWORD
+    LOCAL h:DWORD
+
+    mov  ebx, sel
+    INVOKE dib_span, ebx
+    mov  w, eax
+    INVOKE dib_span2, ebx
+    mov  h, eax
+
+    cmp  w, 1
+    jl   dw_fail
+    cmp  h, 1
+    jl   dw_fail
+
+    INVOKE dib_build, ADDR tmp, w, h, sel, hwnd
+    test eax, eax
+    jz   dw_fail
+
+    INVOKE dib_fill_opaque, ADDR tmp
+    INVOKE dib_mirror, ADDR tmp
+    INVOKE dib_commit, ADDR tmp
+
+    mov  eax, 1
+    ret
+
+dw_fail:
+    xor  eax, eax
+    ret
+dib_crop_window ENDP
 
 ; ---------------------------------------------------------------------------
 ; dib_crop_free(Rect *bbox, Pt *path, DWORD n) -> BOOL in eax. Make a Snip from
@@ -111,7 +151,7 @@ dib_crop_free PROC USES ebx esi edi sel:DWORD, path:DWORD, n:DWORD
     cmp  h, 1
     jl   cf_fail
 
-    INVOKE dib_build, ADDR tmp, w, h, sel
+    INVOKE dib_build, ADDR tmp, w, h, sel, 0
     test eax, eax
     jz   cf_fail
 
@@ -171,12 +211,13 @@ dib_snip PROC
 dib_snip ENDP
 
 ; ---------------------------------------------------------------------------
-; dib_build(Snip *sn, DWORD w, DWORD h, Rect *sel) -> BOOL in eax. Fill *sn with
-; a fresh Snip of w x h pixels captured from the Selection, or zero it and
-; return 0. Anything half-built is freed on the way out. Alpha is left as GDI
-; wrote it (zero); the caller synthesises it - opaque or coverage.
+; dib_build(Snip *sn, DWORD w, DWORD h, Rect *sel, DWORD hwnd) -> BOOL in eax.
+; Fill *sn with a fresh Snip of w x h pixels captured from the Selection, or zero
+; it and return 0. hwnd is 0 for the region blit, or the window to render.
+; Anything half-built is freed on the way out. Alpha is left as GDI wrote it
+; (zero); the caller synthesises it - opaque or coverage.
 ; ---------------------------------------------------------------------------
-dib_build PROC USES ebx esi edi sn:DWORD, w:DWORD, h:DWORD, sel:DWORD
+dib_build PROC USES ebx esi edi sn:DWORD, w:DWORD, h:DWORD, sel:DWORD, hwnd:DWORD
     LOCAL hdcScr:DWORD
     LOCAL bitsW:DWORD
     LOCAL bitsP:DWORD
@@ -239,8 +280,14 @@ dib_build PROC USES ebx esi edi sn:DWORD, w:DWORD, h:DWORD, sel:DWORD
     mov  ecx, bitsP
     mov  [ebx].Snip.pbits, ecx
 
-    ; --- fill Working from the screen ---------------------------------------
+    ; --- fill Working from the screen, or from the window --------------------
+    cmp  hwnd, 0
+    je   da_region
+    INVOKE capture_window, hwnd, sel, [ebx].Snip.hdc, w, h, [ebx].Snip.bits
+    jmp  da_shot
+da_region:
     INVOKE capture_region, sel, [ebx].Snip.hdc, w, h
+da_shot:
     test eax, eax
     jz   da_fail
 
