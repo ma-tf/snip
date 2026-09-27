@@ -75,7 +75,8 @@ its gotchas live in [`docs/shell.md`](shell.md).
 
 **The Overlay is a surface, the Selection is the behaviour.** `overlay.asm` owns the window,
 the premultiplied DIB, and the chrome; `select.asm` owns the session state machine and the
-drag, and registers `sel_wndproc` as the Overlay class's WndProc. `select` calls into
+gestures — a drag, a trace, a window hover, a monitor hover — and registers `sel_wndproc` as
+the Overlay class's WndProc. `select` calls into
 `overlay` and never the reverse. `geometry.asm` holds the crop maths Win32-free. See
 [`docs/overlay.md`](overlay.md) and [`docs/select.md`](select.md).
 
@@ -86,7 +87,9 @@ handoff in order: `dib_crop` blits the Selection's region straight off the scree
 Editor. The capture happens while both our windows are hidden, so neither lands in the snip;
 the region blit means no full-screen buffer is ever held. Window mode swaps the region blit
 for `PrintWindow(PW_RENDERFULLCONTENT)` off the UI thread with a timeout, then a plain
-`PrintWindow`, then the region blit as the last resort. See
+`PrintWindow`, then the region blit as the last resort. Full-screen mode keeps the region
+blit but takes it from one monitor's rectangle — the one under the pointer — not the whole
+virtual screen. See
 [`docs/capture.md`](capture.md).
 
 **The desktop is not one monitor at (0,0).** A Selection is virtual-relative — the

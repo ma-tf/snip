@@ -99,6 +99,11 @@ IsIconic         PROTO STDCALL :DWORD
 WindowFromPoint  PROTO STDCALL :SDWORD, :SDWORD
 GetAncestor      PROTO STDCALL :DWORD, :DWORD             ; (hwnd, GA_ROOT)
 
+; ticket 09: the monitor under the pointer for full-screen mode.
+; MonitorFromPoint(POINT pt, DWORD flags) also takes the POINT BY VALUE, exactly
+; like WindowFromPoint: declared as two SDWORDs and called MonitorFromPoint(x, y).
+MonitorFromPoint PROTO STDCALL :SDWORD, :SDWORD, :DWORD
+
 ; ---------------------------------------------------------------------------
 ; comdlg32 - the standard Save As dialog (ticket 05).
 ; ---------------------------------------------------------------------------
@@ -258,7 +263,8 @@ SM_YVIRTUALSCREEN   EQU 77
 SM_CXVIRTUALSCREEN  EQU 78
 SM_CYVIRTUALSCREEN  EQU 79
 
-; MonitorFromRect / GetMonitorInfoW: the Editor sizes itself to the work area.
+; MonitorFromPoint / MonitorFromRect / GetMonitorInfoW: full-screen mode picks
+; the monitor under the pointer, and the Editor sizes itself to the work area.
 MONITOR_DEFAULTTONEAREST EQU 2
 
 ; SetWindowDisplayAffinity: keep the Overlay out of its own capture.

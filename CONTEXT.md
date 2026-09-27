@@ -15,7 +15,7 @@ The captured region of the screen, owned as one cropped bitmap. A Snip is what t
 _Avoid_: screenshot, capture, grab, clip
 
 **Selection**:
-The region the user marks on the Overlay. A Selection becomes a Snip once it is cropped out of the screen capture.
+The region the user marks on the Overlay: a drawn box or trace, or the window or monitor the pointer is on. A Selection becomes a Snip once it is cropped out of the screen capture.
 _Avoid_: region, marquee, area
 
 **Overlay**:

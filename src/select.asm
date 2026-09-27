@@ -7,9 +7,9 @@
 ; session is in flight.
 ;
 ; Ticket 02 is rectangular only. Ticket 07 added the free-form gesture and the
-; mode dispatch; ticket 08 adds the window gesture below, and ticket 09 will add
-; full-screen. Each mode gets its own branch rather than falling through to the
-; drag handler (see the prototype's bug 2).
+; mode dispatch; ticket 08 added the window gesture; ticket 09 adds full-screen,
+; the monitor under the pointer. Each mode gets its own branch rather than
+; falling through to the drag handler (see the prototype's bug 2).
 ;
 ; The live state is module-private: a session is a singleton, like the Shell.
 ; When the Selection completes, select_finish drives the handoff: the Selection
@@ -39,6 +39,7 @@ sel_ldown    PROTO STDCALL :DWORD
 sel_mmove    PROTO STDCALL :DWORD
 sel_lup      PROTO STDCALL
 sel_hover    PROTO STDCALL
+sel_hover_full PROTO STDCALL
 sel_selectable PROTO STDCALL :DWORD
 sel_class_eq PROTO STDCALL :DWORD, :DWORD
 sel_restore  PROTO STDCALL
@@ -71,7 +72,8 @@ sel_dpi    DWORD ?          ; the Overlay's effective DPI; scales the free-form 
 sel_vx     SDWORD ?         ; the virtual-screen origin, read at session start
 sel_vy     SDWORD ?
 sel_hwnd   DWORD ?          ; window mode: the top-level window under the cursor
-sel_has    DWORD ?          ; window mode: 1 when sel_hwnd is capturable
+sel_has    DWORD ?          ; window / full-screen: 1 when the highlight is capturable
+sel_mon    DWORD ?          ; full-screen mode: the monitor the highlight names
 sel_origin Pt <>            ; where the drag was pressed, in Overlay client pixels
 sel_cur    Pt <>            ; where the pointer is now, in Overlay client pixels
 sel_rect   Rect <>          ; the Selection so far, in Overlay client pixels
@@ -102,6 +104,7 @@ sb_mode_ok:
     mov  sel_down, 0
     mov  sel_has, 0
     mov  sel_hwnd, 0
+    mov  sel_mon, 0
     mov  sel_rect.left, 0
     mov  sel_rect.top, 0
     mov  sel_rect.right, 0
@@ -188,11 +191,13 @@ sel_ldown PROC USES ebx lParam:DWORD
 
     cmp  sel_mode, MODE_WINDOW
     je   sl_window
+    cmp  sel_mode, MODE_FULL
+    je   sl_full
     cmp  sel_mode, MODE_RECT
     je   sl_rect
     cmp  sel_mode, MODE_FREE
     je   sl_free
-    jmp  sl_done                  ; full-screen: ticket 09
+    jmp  sl_done
 
 sl_window:
     ; A click captures the window the hover is highlighting. Resolve once more at
@@ -203,6 +208,17 @@ sl_window:
     je   sl_window_done
     INVOKE select_finish
 sl_window_done:
+    ret
+
+sl_full:
+    ; No drag either: one click captures the monitor under it. Resolve at the
+    ; click point (the pointer may not have moved since New), then finish, which
+    ; ends the session - so no SetCapture and no sel_lup.
+    INVOKE sel_hover_full
+    cmp  sel_has, 0
+    je   sl_full_done
+    INVOKE select_finish
+sl_full_done:
     ret
 
 sl_rect:
@@ -237,10 +253,19 @@ sel_mmove PROC USES ebx lParam:DWORD
     movsx edx, ax
     mov  sel_cur.y, edx
 
-    ; Window mode highlights as the pointer moves, with no button held.
+    ; Window and full-screen modes highlight as the pointer moves, with no button
+    ; held - a window, or the monitor under the cursor.
     cmp  sel_mode, MODE_WINDOW
-    jne  sm_drag
+    je   sm_window
+    cmp  sel_mode, MODE_FULL
+    je   sm_full
+    jmp  sm_drag
+
+sm_window:
     INVOKE sel_hover
+    ret
+sm_full:
+    INVOKE sel_hover_full
     ret
 
 sm_drag:
@@ -394,6 +419,89 @@ sh_none:
 sh_done:
     ret
 sel_hover ENDP
+
+; ---------------------------------------------------------------------------
+; sel_hover_full - full-screen mode: resolve the monitor under the pointer,
+; highlight it, and remember it for the click. Called on every move; it repaints
+; only when the resolved monitor changes, so moving inside one monitor does not
+; re-present the layered frame every message.
+;
+; MonitorFromPoint takes the POINT by value, so x and y are passed as two
+; SDWORDs - the same marshalling WindowFromPoint needs. rcMonitor is the
+; monitor's rectangle in SCREEN pixels (negative for a monitor left of the
+; primary) and is exclusive on right/bottom, so it is made inclusive here: the
+; Snip crop adds the +1, and a full-screen Snip must be exactly the monitor's
+; pixels. It is stored virtual-relative like every sel_rect; select_finish adds
+; the origin back once, at the boundary.
+; ---------------------------------------------------------------------------
+sel_hover_full PROC USES ebx esi edi
+    LOCAL sx:SDWORD
+    LOCAL sy:SDWORD
+    LOCAL mi:MONITORINFO
+
+    mov  esi, sel_app
+    test esi, esi
+    jz   shf_done
+
+    ; pointer, virtual-relative -> screen pixels
+    mov  eax, sel_cur.x
+    add  eax, sel_vx
+    mov  sx, eax
+    mov  eax, sel_cur.y
+    add  eax, sel_vy
+    mov  sy, eax
+
+    INVOKE MonitorFromPoint, sx, sy, MONITOR_DEFAULTTONEAREST
+    test eax, eax
+    jz   shf_none
+    mov  ebx, eax
+
+    ; the same monitor as last time: nothing to repaint
+    cmp  ebx, sel_mon
+    je   shf_done
+
+    mov  mi.cbSize, SIZEOF MONITORINFO
+    INVOKE GetMonitorInfoW, ebx, ADDR mi
+    test eax, eax
+    jz   shf_none
+
+    ; rcMonitor is exclusive; the Selection is inclusive (the crop adds the +1)
+    mov  eax, mi.rcMonitor.left
+    sub  eax, sel_vx
+    mov  sel_rect.left, eax
+    mov  eax, mi.rcMonitor.top
+    sub  eax, sel_vy
+    mov  sel_rect.top, eax
+    mov  eax, mi.rcMonitor.right
+    dec  eax
+    sub  eax, sel_vx
+    mov  sel_rect.right, eax
+    mov  eax, mi.rcMonitor.bottom
+    dec  eax
+    sub  eax, sel_vy
+    mov  sel_rect.bottom, eax
+
+    mov  sel_mon, ebx
+    mov  sel_has, 1
+    INVOKE sel_repaint
+    ret
+
+shf_none:
+    ; no monitor to name (DEFAULTTONEAREST should always find one): drop the
+    ; highlight rather than leave the previous rect painted
+    cmp  sel_has, 0
+    je   shf_done
+    mov  sel_has, 0
+    mov  sel_mon, 0
+    mov  sel_rect.left, 0
+    mov  sel_rect.top, 0
+    mov  sel_rect.right, 0
+    mov  sel_rect.bottom, 0
+    INVOKE sel_repaint
+
+shf_done:
+    ret
+sel_hover_full ENDP
 
 ; ---------------------------------------------------------------------------
 ; sel_selectable(HWND) -> BOOL in eax. Whether a top-level window may be snipped.

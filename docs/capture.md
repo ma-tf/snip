@@ -22,7 +22,7 @@ read the Snip.
 | `src/capture.asm` | `capture_region` — the screen blit — plus `capture_window` and `window_frame` — the `PrintWindow` render and the window frame. |
 | `src/dib.asm` | The Snip: allocation, the crop, alpha synthesis, the Pristine twin. |
 | `src/editor.asm` | The Editor window: create-once, fit-to-Snip, the paint path. |
-| `src/select.asm` | `select_finish` — the order of operations that drives all three, and the window-mode hover. |
+| `src/select.asm` | `select_finish` — the order of operations that drives all three, plus the window-mode hover and the full-screen monitor hover. |
 
 `Snip` is declared in `src/snip.inc`; `dib.asm` owns the one live instance and
 `editor.asm` reads it through `dib_snip`. The crop maths stays in `geometry.asm`,
@@ -72,14 +72,26 @@ the screen blit. That bounds a frozen Overlay at about two seconds.
 `DwmGetWindowAttribute` is resolved from `dwmapi.dll` at runtime, the same
 Crinkler-safe pattern `encode.asm` uses for COM, so no import library is added.
 
-**Window mode highlights as it moves; a click captures.** `select_hover` runs on
-every `WM_MOUSEMOVE`, resolves the top-level window with `WindowFromPoint` +
-`GetAncestor(GA_ROOT)`, and reuses the Overlay's existing hole-punch so the
-hovered window is the undimmed region — no new Overlay code. It repaints only when
-the resolved window changes. The Overlay is flipped `WS_EX_TRANSPARENT` around the
-hit-test so `WindowFromPoint` does not return the Overlay itself. The desktop,
-the shell window, the wallpaper host, the taskbars, and minimised windows are
-rejected, so the dim holds over them.
+**Window and full-screen modes highlight as they move; a click captures.**
+`sel_hover` runs on every `WM_MOUSEMOVE`, resolves the top-level window with
+`WindowFromPoint` + `GetAncestor(GA_ROOT)`, and reuses the Overlay's existing
+hole-punch so the hovered window is the undimmed region — no new Overlay code.
+`sel_hover_full` does the same for the monitor under the cursor with
+`MonitorFromPoint`. Each repaints only when the resolved window or monitor
+changes. The Overlay is flipped `WS_EX_TRANSPARENT` around the window hit-test so
+`WindowFromPoint` does not return the Overlay itself. The desktop, the shell
+window, the wallpaper host, the taskbars, and minimised windows are rejected, so
+the dim holds over them.
+
+**Full-screen mode captures one monitor, never the virtual screen.** The monitor
+under the pointer is resolved with `MonitorFromPoint`, and its `rcMonitor`
+becomes the Selection. `rcMonitor` is exclusive on `right`/`bottom` while a
+`Rect` here is inclusive, so `sel_hover_full` subtracts the one; the crop adds it
+back and the Snip is exactly that monitor's physical pixels. A monitor left of
+the primary carries a negative origin in `rcMonitor`, so the region blit reads
+from the right place — the same "convert once, at the boundary" rule as every
+other Selection. A click on a second monitor captures that monitor, not the
+5360-pixel-wide desktop.
 
 **The width is inclusive.** A drag from (100,100) to (500,400) is a 401×301
 snip, not 400×300. `geo_width`/`geo_height` return the span, and `dib_crop` adds
@@ -145,6 +157,17 @@ top-left corner shows. Scaling would misrepresent what Copy will publish.
   `select_finish` adds the virtual-screen origin once, the same as for a
   rectangular Selection, so a window snip on a monitor left of the primary lands
   in the right place.
+- **`MonitorFromPoint` takes its `POINT` by value.** Declared as two `SDWORD`s,
+  exactly like `WindowFromPoint`, so `INVOKE MonitorFromPoint, x, y,
+  MONITOR_DEFAULTTONEAREST` pushes the 8 bytes MASM would not otherwise marshal
+  from a `POINT` name.
+- **`rcMonitor` is exclusive; a `Rect` here is inclusive.** `GetMonitorInfoW`
+  reports a monitor's bounds the way `RECT` does — width is `right - left`, not
+  the pixel count. `dib_crop` adds the one, so `sel_hover_full` subtracts it
+  first. Without the `-1`, a full-screen Snip is a pixel wider and taller than
+  the monitor. The same exclusive-vs-inclusive seam exists in `window_frame`
+  (ticket 08), where `GetWindowRect`/DWM bounds are used directly; window snips
+  are therefore one pixel oversized. Left as a documented follow-up.
 - **`window_frame`'s parameter cannot be called `out`.** `out` is a MASM
   instruction (`A2008`), so the parameter is `frame`.
 - **The Overlay is not in the snip only because it excludes itself.** If that

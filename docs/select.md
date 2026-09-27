@@ -13,8 +13,8 @@ session is in flight.
 
 Ticket 02 landed the rectangular Selection; ticket 07 adds free-form, which
 traces a path instead of a box and hands the Overlay a different kind of frame.
-Window and full-screen add their own mouse-down paths here when tickets 08 and
-09 land.
+Ticket 08 added the window gesture and ticket 09 the full-screen one: both
+highlight what is under the pointer and capture it on a click, with no drag.
 
 ## Where it lives
 
@@ -41,6 +41,8 @@ fast drag out of the window would freeze the Selection at the edge.
 `geo_normalise` writes the bounding box with `left <= right` and `top <= bottom`
 regardless of which way the pointer went. That maths is `geometry.asm`'s, which
 is Win32-free on purpose — the trickiest part of the module reads on its own.
+The rectangle is inclusive: `rcMonitor` is exclusive on `right`/`bottom`, so
+full-screen mode subtracts the one there and the crop adds it back.
 
 **One pixel is a Selection; zero is not.** `sel_lup` measures the rectangle and
 ignores anything with a width or height of zero or less, so a click that never
@@ -53,6 +55,17 @@ gets its own branch rather than falling through to the rectangle handler.
 `sel_ldown` starts the Trace, `sel_mmove` accepts points and repaints the preview,
 and `sel_lup` simplifies and crops. `sel_repaint` dispatches: a rectangle goes to
 `overlay_repaint`, a Trace to `overlay_repaint_free`.
+
+**Window and full-screen are highlight gestures.** Both capture what is under the
+pointer with no drag, so they highlight as the pointer moves and act on a click —
+there is no `sel_down` and no `SetCapture`. `sel_hover` resolves the top-level
+window under the cursor; `sel_hover_full` resolves the monitor. The highlight is
+the Overlay's existing hole-punch: the highlighted rect *is* the Selection, so no
+Overlay code was needed for either. Each remembers what it resolved (`sel_hwnd`,
+`sel_mon`) and repaints only when that changes, so moving inside one window or
+monitor does not re-present the layered frame every message. `sel_ldown` resolves
+once more at the click point — the pointer may not have moved since New — then
+finishes the session, so these branches return before `SetCapture`.
 
 **Cancellation restores, it does not remember.** `select_cancel` clears the drag
 and restores the Shell, and deliberately does *not* record the Selection, so
@@ -81,8 +94,7 @@ land the Editor's own pixels in the Snip. Between the hide and the restore,
 - **A per-mode mouse-down path must not fall through to the drag handler.**
   The prototype's bug 2 was exactly this: a click in window mode ran the
   rectangular update and collapsed the snip to `0 x 0`. Each mode gets its own
-  branch; ticket 02 has only the rectangular one, and the shape is already
-  right for the rest.
+  branch; all four now do, and the shape is the same for the next one.
 - **`sel_live` makes begin and cancel idempotent.** Calling `select_begin` on a
   live session is a no-op, not an error — the Overlay is already up.
 - **A failed `overlay_show` restores the Shell.** A session that cannot raise
