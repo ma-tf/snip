@@ -115,8 +115,9 @@ the Editor pointing at the Snip it already had, rather than a freed bitmap — t
 message.
 
 **The Editor is created once and reused.** `editor_open` reuses
-`App.hwndEditor` if it exists, so the second snip onward only resizes and
-repaints — no window churn. Closing the Editor (`WM_CLOSE`) hides it rather than
+`App.hwndEditor` if it exists, so the second snip onward only repaints — and
+resizes the window to the image, unless the user has resized it by hand (ticket
+17). Closing the Editor (`WM_CLOSE`) hides it rather than
 destroying it, for the same reason; quitting is the Shell's job.
 
 **The Editor hides during a session.** The topmost Overlay covers it, so the user
@@ -125,10 +126,17 @@ dragged over it would otherwise capture the Editor's own pixels. `select_begin`
 hides both windows and `sel_restore` brings both back, with the capture happening
 in between while they are still hidden.
 
-**A Snip bigger than the work area is capped, not scaled.** With no zoom yet
-(ticket 17), the Editor sizes its client to the Snip but clamps it into the
-monitor work area under `MonitorFromRect`; the paint `BitBlt` clips, so the
-top-left corner shows. Scaling would misrepresent what Copy will publish.
+**An oversized Snip is fitted, and the Editor is resizable.** Ticket 03 sized the
+client to the Snip and clamped it into the monitor work area under
+`MonitorFromRect`, which left a Snip bigger than the work area showing only its
+top-left corner. Ticket 17 makes the window resizable and draws the Snip scaled
+down to fit — whole, never upscaled past 100% — via `GdipDrawImageRectI`. The fit
+is a view only: Copy and Save still publish the Snip's own pixels. See
+[`docs/editor.md`](editor.md).
+
+**The Editor's size, once the user sets it, is theirs.** The first Snip sizes the
+window to the image (capped to the work area); after the user drags the window, a
+new Snip changes only the image and leaves the size and position alone.
 
 ## Gotchas
 
@@ -138,10 +146,10 @@ top-left corner shows. Scaling would misrepresent what Copy will publish.
 - **`ch` is a register.** A local named `ch` assembles as the high byte register
   and takes the whole PROC down with `invalid instruction operands`. The
   Editor's locals are `winW`/`winH`/`srcW`/`srcH` for exactly this reason.
-- **The Editor's minimum width is the OS's, not yours.** Windows will not make a
-  captioned window narrower than the system minimum (~120 px client here), so a
-  tiny Snip produces a slightly wider window than the Snip's width. Harmless —
-  the paint clips — but it makes a naive "client == Snip size" check fail.
+- **The Editor's minimum width is the toolbar's, not the OS's.** Ticket 17 makes
+  the window resizable and sets `WM_GETMINMAXINFO`'s minimum to
+  `ED_TOOLBAR_MINW` plus a strip of image, so the seven buttons never clip. A tiny
+  Snip still opens in that wider window with the image centred 1:1.
 - **`INVOKE` does not tolerate an undefined local in an argument.** An `if` that
   skips setting a local does not skip its mention in a later `INVOKE`; MASM
   fails with A2070. Initialise locals, or use two call sites.
@@ -183,5 +191,6 @@ top-left corner shows. Scaling would misrepresent what Copy will publish.
 - [`docs/research/capture-dpi-multimonitor.md`](research/capture-dpi-multimonitor.md)
   — the capture and DPI research this path follows.
 - [`docs/select.md`](select.md) — the session lifecycle that calls in here.
+- [`docs/editor.md`](editor.md) — the Editor window, its fit, and the mapping.
 - [`docs/multimonitor.md`](multimonitor.md) — the coordinate spaces and DPI rules.
 - [Ticket 03](../.scratch/asm-snip-build/issues/03-snip-crop-editor-window.md).

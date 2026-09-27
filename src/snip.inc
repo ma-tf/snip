@@ -186,7 +186,7 @@ ink_reset       PROTO STDCALL                          ; void - drop the log for
 ink_start       PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :DWORD  ; BOOL ink_start(tool, x, y, dpi)
 ink_extend      PROTO STDCALL :SDWORD, :SDWORD         ; void ink_extend(x, y)
 ink_end         PROTO STDCALL                          ; void - commit the stroke
-ink_preview     PROTO STDCALL :DWORD, :SDWORD          ; void ink_preview(hdc, dy)
+ink_preview     PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :DWORD, :DWORD, :DWORD, :DWORD  ; void ink_preview(hdc, ox, oy, vw, vh, sw, sh) - scaled to the Editor's fit
 ink_erase_begin PROTO STDCALL                          ; void - start an eraser drag
 ink_erase       PROTO STDCALL :SDWORD, :SDWORD, :DWORD ; BOOL ink_erase(x, y, dpi)
 ink_erase_end   PROTO STDCALL                          ; void - end an eraser drag

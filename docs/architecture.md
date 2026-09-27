@@ -92,6 +92,12 @@ blit but takes it from one monitor's rectangle — the one under the pointer —
 virtual screen. See
 [`docs/capture.md`](capture.md).
 
+**The Editor is resizable and fits an oversized Snip.** `editor.asm` owns one scale,
+computed by `editor_view`: the Snip scaled down to fit the image area, capped at 100% and
+centred, so a full-screen Snip is seen whole rather than as a clipped corner. The same fit
+maps the mouse back to Snip pixels. The first Snip sizes the window to the image; once the
+user resizes, a new Snip leaves the size alone. See [`docs/editor.md`](editor.md).
+
 **The desktop is not one monitor at (0,0).** A Selection is virtual-relative — the
 Overlay's client space — and `select_finish` adds the virtual-screen origin once, at the
 boundary, so capture and the Editor work in screen pixels. Geometry is read fresh every
@@ -152,6 +158,7 @@ the linked build small and the Crinkler `size` build smaller still; see
 - [Free-form snips](freeform.md) — the Trace geometry and the coverage Mask.
 - [The Snip and the capture path](capture.md) — the region blit, alpha synthesis, and the
   Editor window.
+- [The Editor view](editor.md) — resizing, fit-to-window, and the client→Snip mapping.
 - [Copy and Save As](encode.md) — WIC encoding, the clipboard formats, and the Save dialog.
 - [Ink](ink.md) — the annotation model, the command log, and the Eraser and Undo.
 - [DPI and multi-monitor](multimonitor.md) — coordinate spaces, the re-read rules, and the

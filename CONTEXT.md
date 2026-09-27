@@ -65,6 +65,10 @@ _Avoid_: main window, home
 The window shown after a Selection becomes a Snip, holding the Working bitmap and the annotation tools.
 _Avoid_: canvas window, annotator
 
+**Fit**:
+The scale the Editor draws a Snip at: the whole image scaled down to fit its window, capped at 100%, with the mouse mapped back through it. A view, not a change to the Snip.
+_Avoid_: zoom, scale, resize
+
 **Pristine twin**:
 A Snip's Pristine bitmap, kept alongside its Working bitmap. The two start byte-identical; annotations only ever touch Working.
 _Avoid_: copy, backup

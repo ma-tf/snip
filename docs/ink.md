@@ -23,7 +23,7 @@ bitmap.
 | File | Owns |
 | --- | --- |
 | `src/ink.asm` | The command log, the strokes, the GDI+ drawing, the Eraser hit-test, and Undo. Impure by nature; owns no window. |
-| `src/editor.asm` | The Editor window, the toolbar, the mouse, and the mapping from client pixels to Snip pixels. |
+| `src/editor.asm` | The Editor window, the toolbar, the mouse, the fit, and the mapping from client pixels to Snip pixels. |
 | `src/win32.inc` | The gdiplus bindings, the `GdiplusStartupInput` layout, and the GDI+ enum constants. |
 | `src/snip.inc` | The `ink_*` interface and the tool constants (`INK_PEN`, `INK_HILITE`, `INK_ERASER`). |
 | `src/dib.asm` | The Pristine and Working bitmaps the log replays onto; `ink.asm` reads them through `dib_snip`. |
@@ -38,8 +38,9 @@ looks like now.
 **A stroke is points, not pixels.** `ink_start(tool, x, y, dpi)` opens a stroke in
 a fixed arena; `ink_extend` appends the pointer once it has moved a few pixels
 (DPI-scaled, so a slow drag does not hoard a point per pixel); `ink_end` commits.
-Points are stored in the Snip's own pixel space — the Editor client less the
-toolbar — so a stroke replays identically and never needs re-converting.
+Points are stored in the Snip's own pixel space — the Editor maps its client
+through the current fit (ticket 17) before calling in — so a stroke replays
+identically and never needs re-converting, whatever the window size.
 
 **Drawing is GDI+.** A stroke becomes one `GdipDrawLinesI` call with a round-capped,
 round-joined pen. GDI+ is the only antialiasing GDI cannot provide, which is why it
@@ -78,9 +79,11 @@ stroke is drawn straight into Working, because everything else is already there.
 
 **The in-progress stroke is a preview, not Working.** While the mouse is down,
 Working still holds only committed ink and `ink_preview` draws the live stroke onto
-the paint DC after the Editor's `BitBlt`. Redrawing the whole stroke each frame is
+the paint DC after the Editor's image draw. Redrawing the whole stroke each frame is
 what keeps a translucent Highlighter from double-blending at its own overlaps; if
-it were drawn into Working incrementally, every frame would darken the last.
+it were drawn into Working incrementally, every frame would darken the last. The
+preview is scaled into the same fitted view as the image (ticket 17), points and
+pen width alike, so a fitted stroke is as thick live as it is once committed.
 
 ## Gotchas
 
@@ -101,6 +104,10 @@ it were drawn into Working incrementally, every frame would darken the last.
   structure is a syntax error.
 - **A click is a dot.** A one-point stroke is doubled before `GdipDrawLinesI`, so the
   round cap paints a dot rather than nothing.
+- **The preview pen width scales with the fit.** `ink_make_pen_w` takes an explicit
+  width; the committed path uses the stroke's own, the preview uses it scaled by
+  the Editor's zoom. Scaling the points but not the width would draw the live
+  stroke too thick when the Snip is fitted.
 - **The arena is fixed and append-only.** 256 strokes and 65,536 points across a
   session, with 4,096 points to a stroke; when it fills, ink simply stops being
   accepted. The same fixed-buffer bargain the free-form Trace makes (ticket 07).
@@ -112,6 +119,7 @@ it were drawn into Working incrementally, every frame would darken the last.
 
 - [`docs/architecture.md`](architecture.md) — the explainer template, the module layout, and the segment conventions.
 - [`docs/capture.md`](capture.md) — the Snip, its Pristine twin, and the Working bitmap.
+- [`docs/editor.md`](editor.md) — the window, its fit, and the client→Snip mapping the mouse goes through.
 - [`docs/encode.md`](encode.md) — Copy and Save, which publish the annotated Working bitmap unchanged.
 - [`CONTEXT.md`](../CONTEXT.md) — Annotation, Stroke, Pristine bitmap, Working bitmap.
 - [`docs/research/classic-snipping-tool-editor.md`](research/classic-snipping-tool-editor.md) — what the reference editor's tools do.

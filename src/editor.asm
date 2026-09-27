@@ -8,10 +8,12 @@
 ; the mouse, and the mapping from client pixels to Snip pixels. Zoom is
 ; ticket 17.
 ;
-; The window is normal, not topmost, and no menu bar (spec). While a Snipping
-; session is live it is hidden by select.asm, exactly like the Shell: the
-; topmost Overlay covers it anyway, but it is not excluded from capture, so a
-; Selection over it would otherwise capture its pixels.
+; The window is normal, not topmost, and no menu bar (spec). It is resizable,
+; and a Snip larger than its image area is fitted (scaled down, never upscaled)
+; rather than clipped - ticket 17. While a Snipping session is live it is hidden
+; by select.asm, exactly like the Shell: the topmost Overlay covers it anyway,
+; but it is not excluded from capture, so a Selection over it would otherwise
+; capture its pixels.
 ;
 ; It paints from the Snip's pixels through GDI+, whose image path honours the
 ; alpha channel, so a free-form cut shows its shape and the transparent region
@@ -39,17 +41,23 @@ PUBLIC editor_open
 editor_create   PROTO STDCALL :DWORD                       ; HWND editor_create(App *app)
 editor_on_create PROTO STDCALL :DWORD, :DWORD              ; void editor_on_create(DWORD hwnd, App *app)
 editor_fit      PROTO STDCALL :DWORD, :DWORD               ; void editor_fit(App *app, DWORD hwnd)
+editor_view     PROTO STDCALL :DWORD                       ; BOOL editor_view(DWORD hwnd) - compute the fit into ed_*
+editor_map      PROTO STDCALL :DWORD, :DWORD, :DWORD       ; BOOL editor_map(hwnd, SDWORD *px, SDWORD *py) - client -> Snip
 editor_do_paint PROTO STDCALL :DWORD                       ; void editor_do_paint(DWORD hwnd)
 editor_save     PROTO STDCALL :DWORD                       ; void editor_save(App *app)
 editor_copy     PROTO STDCALL :DWORD                       ; void editor_copy(App *app)
 editor_set_tool PROTO STDCALL :DWORD, :DWORD               ; void editor_set_tool(DWORD hwnd, DWORD tool)
 editor_wndproc  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 
-ED_STYLE EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX
+ED_STYLE EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX OR WS_MAXIMIZEBOX OR WS_THICKFRAME
 
 ; The toolbar strip and the minimum client width that fits all seven buttons.
 ED_TOOLBAR_H    EQU 32
 ED_TOOLBAR_MINW EQU 456
+
+; The smallest image area a user may drag the window down to, so there is always
+; somewhere to annotate.
+ED_MINIMG_H     EQU 64
 
 ; The mouse drag in flight: none, an ink stroke, or an Eraser pass.
 ED_DRAG_NONE    EQU 0
@@ -93,6 +101,24 @@ ed_file WORD MAX_PATH DUP(?)     ; the Save As file-name buffer
 ed_tool        DWORD ?
 ed_drag        DWORD ?
 ed_dpi         DWORD ?
+
+; Ticket 17 view state. The window is resizable; an oversized Snip is fitted
+; into the image area, and the same fit maps the mouse back to Snip pixels.
+; ed_userSized latches once the user drags the window, after which a new Snip no
+; longer resizes or moves it. WM_SIZE tells a real resize from a spurious one by
+; comparing against ed_fitCW/CH, the client size editor_fit last applied, so its
+; own MoveWindow and ShowWindow re-showing the window are not mistaken for a user
+; drag; ed_fitted ignores create-time sizing.
+ed_userSized   DWORD ?
+ed_fitted      DWORD ?
+ed_fitCW       DWORD ?      ; the client size editor_fit last applied
+ed_fitCH       DWORD ?
+ed_vx          SDWORD ?     ; the fitted image's client origin ...
+ed_vy          SDWORD ?
+ed_vw          DWORD ?      ; ... and size, in client pixels
+ed_vh          DWORD ?
+ed_sw          DWORD ?      ; the Snip's own size, for the fit ratio
+ed_sh          DWORD ?
 ed_hwndPen     DWORD ?
 ed_hwndHilite  DWORD ?
 ed_hwndEraser  DWORD ?
@@ -290,9 +316,13 @@ editor_save ENDP
 
 ; ---------------------------------------------------------------------------
 ; editor_fit(App *app, DWORD hwnd) - size the Editor's client area to the Snip
-; and place it on the Snip's monitor. A Snip larger than the work area is
-; capped and clipped: there is no zoom yet (ticket 17), and no pan (spec), so
-; shrinking would be a lie about what Copy will publish.
+; and place it on the Snip's monitor - but only until the user resizes the
+; window. After that the user owns the size and position, and a new Snip only
+; changes the image: editor_view fits the new Snip into whatever the window is.
+;
+; A Snip larger than the work area still opens capped to the work area; the fit
+; then scales it down so the whole image is visible (no pan; the scale is a
+; view, not a change to the Snip Copy/Save publish).
 ; ---------------------------------------------------------------------------
 editor_fit PROC USES esi app:DWORD, hwnd:DWORD
     LOCAL rc:RECT
@@ -306,6 +336,11 @@ editor_fit PROC USES esi app:DWORD, hwnd:DWORD
     LOCAL haveMI:DWORD
 
     mov  haveMI, 0
+
+    ; Once the user has resized the window, they own its size and position; a new
+    ; Snip changes only the image, which editor_view fits on demand.
+    cmp  ed_userSized, 0
+    jne  ef_done
 
     INVOKE dib_snip
     mov  esi, eax
@@ -412,6 +447,14 @@ ef_y_hi:
     mov  posY, eax
 
 ef_place:
+    ; Record the client size before moving, so the WM_SIZE it sends is not read
+    ; as a user resize; and mark the window as fitted, so create-time sizing is
+    ; ignored from here on.
+    mov  eax, winW
+    mov  ed_fitCW, eax
+    mov  eax, winH
+    mov  ed_fitCH, eax
+    mov  ed_fitted, 1
     INVOKE MoveWindow, hwnd, posX, posY, outW, outH, 1
 
 ef_done:
@@ -419,9 +462,179 @@ ef_done:
 editor_fit ENDP
 
 ; ---------------------------------------------------------------------------
-; editor_do_paint(DWORD hwnd) - copy the Working bitmap onto the window, then
-; overdraw the in-progress stroke. BitBlt clips to the window, so a Snip capped
-; by editor_fit shows its top-left corner and nothing else.
+; editor_view(DWORD hwnd) -> BOOL in eax. Compute how the Snip is placed in the
+; image area (client less the toolbar) and cache it in ed_vx/vy/vw/vh plus the
+; Snip's own ed_sw/sh. The scale is the smaller of the two axis ratios, capped at
+; 100% so a Snip that fits is never upscaled, and the image is centred. Paint,
+; input, and the ink preview all read this, so they cannot disagree.
+;
+; Recomputing on demand is deliberate: the view depends on both the client size
+; and the live Snip, and both change without a single event to hook (a new Snip
+; arrives through editor_fit, a resize through WM_SIZE).
+; ---------------------------------------------------------------------------
+editor_view PROC USES ebx esi hwnd:DWORD
+    LOCAL rc:RECT
+    LOCAL cw:DWORD
+    LOCAL imgH:DWORD
+    LOCAL vw:DWORD
+    LOCAL vh:DWORD
+
+    INVOKE GetClientRect, hwnd, ADDR rc
+    mov  eax, rc.right
+    sub  eax, rc.left
+    mov  cw, eax
+    mov  eax, rc.bottom
+    sub  eax, rc.top
+    sub  eax, ED_TOOLBAR_H
+    mov  imgH, eax
+
+    INVOKE dib_snip
+    mov  esi, eax
+    mov  eax, [esi].Snip.w
+    cmp  eax, 1
+    jl   ev_no
+    mov  ed_sw, eax
+    mov  eax, [esi].Snip.h
+    cmp  eax, 1
+    jl   ev_no
+    mov  ed_sh, eax
+
+    cmp  cw, 1
+    jl   ev_no
+    cmp  imgH, 1
+    jl   ev_no
+
+    ; Fits? then 100%, never upscaled.
+    mov  eax, ed_sw
+    cmp  cw, eax
+    jl   ev_scale
+    mov  eax, ed_sh
+    cmp  imgH, eax
+    jl   ev_scale
+    mov  eax, ed_sw
+    mov  vw, eax
+    mov  eax, ed_sh
+    mov  vh, eax
+    jmp  ev_place
+
+ev_scale:
+    ; The limiting axis: width fits better than height when cw/sh <= imgH/sw.
+    mov  eax, cw
+    imul eax, ed_sh
+    mov  edx, imgH
+    imul edx, ed_sw
+    cmp  eax, edx
+    jg   ev_height
+    ; width-limited: the full width, the height follows
+    mov  eax, cw
+    mov  vw, eax
+    INVOKE MulDiv, ed_sh, cw, ed_sw
+    mov  vh, eax
+    jmp  ev_clamp
+ev_height:
+    ; height-limited: the full height, the width follows
+    mov  eax, imgH
+    mov  vh, eax
+    INVOKE MulDiv, ed_sw, imgH, ed_sh
+    mov  vw, eax
+
+ev_clamp:
+    cmp  vw, 1
+    jge  ev_clamp2
+    mov  vw, 1
+ev_clamp2:
+    cmp  vh, 1
+    jge  ev_place
+    mov  vh, 1
+
+ev_place:
+    ; centre the image in the image area
+    mov  eax, cw
+    sub  eax, vw
+    shr  eax, 1
+    mov  ed_vx, eax
+    mov  eax, imgH
+    sub  eax, vh
+    shr  eax, 1
+    add  eax, ED_TOOLBAR_H
+    mov  ed_vy, eax
+    mov  eax, vw
+    mov  ed_vw, eax
+    mov  eax, vh
+    mov  ed_vh, eax
+    mov  eax, 1
+    ret
+
+ev_no:
+    mov  ed_vw, 0
+    mov  ed_vh, 0
+    xor  eax, eax
+    ret
+editor_view ENDP
+
+; ---------------------------------------------------------------------------
+; editor_map(DWORD hwnd, SDWORD *px, SDWORD *py) -> BOOL in eax.
+; Map a client point to Snip pixels through the current fit, in place. The result
+; is clamped to the Snip, and the return says whether the point was actually
+; inside the image - so a press in the letterbox is rejected while a drag that
+; leaves the image still extends to its edge.
+; ---------------------------------------------------------------------------
+editor_map PROC USES ebx esi edi hwnd:DWORD, ppx:DWORD, ppy:DWORD
+    LOCAL inside:DWORD
+
+    mov  inside, 1
+    INVOKE editor_view, hwnd
+    test eax, eax
+    jz   em_no
+
+    mov  ebx, ppx
+    mov  esi, ppy
+
+    ; x
+    mov  eax, [ebx]
+    sub  eax, ed_vx
+    jns  em_xhi
+    xor  eax, eax
+    mov  inside, 0
+    jmp  em_xok
+em_xhi:
+    cmp  eax, ed_vw
+    jl   em_xok
+    mov  eax, ed_vw
+    dec  eax
+    mov  inside, 0
+em_xok:
+    INVOKE MulDiv, eax, ed_sw, ed_vw
+    mov  [ebx], eax
+
+    ; y
+    mov  eax, [esi]
+    sub  eax, ed_vy
+    jns  em_yhi
+    xor  eax, eax
+    mov  inside, 0
+    jmp  em_yok
+em_yhi:
+    cmp  eax, ed_vh
+    jl   em_yok
+    mov  eax, ed_vh
+    dec  eax
+    mov  inside, 0
+em_yok:
+    INVOKE MulDiv, eax, ed_sh, ed_vh
+    mov  [esi], eax
+
+    mov  eax, inside
+    ret
+em_no:
+    xor  eax, eax
+    ret
+editor_map ENDP
+
+; ---------------------------------------------------------------------------
+; editor_do_paint(DWORD hwnd) - draw the Snip fitted into the image area, then
+; overdraw the in-progress stroke at the same scale. A Snip that fits draws 1:1;
+; a larger one is scaled down so the whole image is visible, with no pan.
 ; ---------------------------------------------------------------------------
 editor_do_paint PROC USES ebx esi edi hwnd:DWORD
     LOCAL ps:PAINTSTRUCT
@@ -465,8 +678,15 @@ editor_do_paint PROC USES ebx esi edi hwnd:DWORD
     cmp  srcH, 1
     jl   ep_done
 
+    ; The fit is the single source of truth for where the image sits and how big
+    ; it is drawn. If there is no view there is nothing to draw.
+    INVOKE editor_view, hwnd
+    test eax, eax
+    jz   ep_done
+
     ; Draw the Snip through GDI+, whose image path honours the alpha channel.
-    ; BitBlt would paint a free-form cut as a full rectangle.
+    ; BitBlt would paint a free-form cut as a full rectangle. A fitted Snip is
+    ; drawn into the view rect, so it scales instead of clipping.
     mov  bmp, 0
     mov  gfx, 0
     mov  eax, srcW
@@ -478,7 +698,14 @@ editor_do_paint PROC USES ebx esi edi hwnd:DWORD
     INVOKE GdipCreateFromHDC, esi, ADDR gfx
     test eax, eax
     jnz  ep_dispose
-    INVOKE GdipDrawImageI, gfx, bmp, 0, ED_TOOLBAR_H
+
+    ; 1:1 needs no filter; a downscale wants a real one.
+    mov  eax, ed_vw
+    cmp  eax, srcW
+    je   ep_draw
+    INVOKE GdipSetInterpolationMode, gfx, InterpolationModeHighQualityBicubic
+ep_draw:
+    INVOKE GdipDrawImageRectI, gfx, bmp, ed_vx, ed_vy, ed_vw, ed_vh
 
 ep_dispose:
     cmp  gfx, 0
@@ -492,7 +719,8 @@ ep_bmp:
 ep_preview:
     ; The in-progress stroke goes straight onto the paint DC, not Working, so a
     ; translucent Highlighter is not double-blended across its own drag frames.
-    INVOKE ink_preview, esi, ED_TOOLBAR_H
+    ; It is scaled to the same view as the image.
+    INVOKE ink_preview, esi, ed_vx, ed_vy, ed_vw, ed_vh, srcW, srcH
 
 ep_done:
     INVOKE EndPaint, hwnd, ADDR ps
@@ -507,10 +735,15 @@ editor_do_paint ENDP
 editor_wndproc PROC hwnd:DWORD, msg:DWORD, wParam:DWORD, lParam:DWORD
     LOCAL px:SDWORD
     LOCAL py:SDWORD
+    LOCAL rc:RECT
 
     mov  eax, msg
     cmp  eax, WM_CREATE
     je   ew_create
+    cmp  eax, WM_SIZE
+    je   ew_size
+    cmp  eax, WM_GETMINMAXINFO
+    je   ew_minmax
     cmp  eax, WM_PAINT
     je   ew_paint
     cmp  eax, WM_ERASEBKGND
@@ -541,6 +774,51 @@ ew_create:
     mov  eax, lParam
     mov  eax, [eax]
     INVOKE editor_on_create, hwnd, eax
+    xor  eax, eax
+    ret
+
+; The window was resized. A real user resize latches ed_userSized, so later Snips
+; leave the size alone; a WM_SIZE that merely echoes the size editor_fit applied
+; (its own MoveWindow, or ShowWindow re-showing the window) is ignored, as is
+; create-time sizing. Either way, repaint.
+ew_size:
+    cmp  wParam, SIZE_MINIMIZED
+    je   ew_size_paint
+    cmp  ed_fitted, 0
+    je   ew_size_paint
+    mov  eax, lParam
+    movzx ecx, ax                  ; new client width
+    cmp  ecx, ed_fitCW
+    jne  ew_size_latch
+    shr  eax, 16
+    movzx ecx, ax                  ; new client height
+    cmp  ecx, ed_fitCH
+    je   ew_size_paint
+ew_size_latch:
+    mov  ed_userSized, 1
+ew_size_paint:
+    INVOKE InvalidateRect, hwnd, 0, 0
+    xor  eax, eax
+    ret
+
+; Ask DefWindowProc for the normal limits first, then raise the minimum so the
+; window cannot be dragged below the toolbar and a strip of image area.
+ew_minmax:
+    INVOKE DefWindowProcW, hwnd, WM_GETMINMAXINFO, 0, lParam
+    mov  rc.left, 0
+    mov  rc.top, 0
+    mov  rc.right, ED_TOOLBAR_MINW
+    mov  eax, ED_TOOLBAR_H
+    add  eax, ED_MINIMG_H
+    mov  rc.bottom, eax
+    INVOKE AdjustWindowRect, ADDR rc, ED_STYLE, 0
+    mov  eax, lParam
+    mov  ecx, rc.right
+    sub  ecx, rc.left
+    mov  [eax].MINMAXINFO.ptMinTrackSize.x, ecx
+    mov  ecx, rc.bottom
+    sub  ecx, rc.top
+    mov  [eax].MINMAXINFO.ptMinTrackSize.y, ecx
     xor  eax, eax
     ret
 
@@ -625,10 +903,12 @@ ew_down:
     mov  px, ecx
     shr  eax, 16
     movsx edx, ax
-    cmp  edx, ED_TOOLBAR_H
-    jl   ew_zero
-    sub  edx, ED_TOOLBAR_H
     mov  py, edx
+
+    ; client -> Snip through the current fit; a press in the letterbox is ignored.
+    INVOKE editor_map, hwnd, ADDR px, ADDR py
+    test eax, eax
+    jz   ew_zero
 
     INVOKE GetDpiForWindow, hwnd
     mov  ed_dpi, eax
@@ -662,10 +942,11 @@ ew_move:
     mov  px, ecx
     shr  eax, 16
     movsx edx, ax
-    cmp  edx, ED_TOOLBAR_H
-    jl   ew_zero
-    sub  edx, ED_TOOLBAR_H
     mov  py, edx
+
+    ; Clamp through the fit; the return is ignored so a drag off the image still
+    ; extends to its edge.
+    INVOKE editor_map, hwnd, ADDR px, ADDR py
 
     cmp  ed_drag, ED_DRAG_STROKE
     je   ew_move_stroke

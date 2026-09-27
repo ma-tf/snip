@@ -45,6 +45,7 @@ PUBLIC ink_undo
 ; Forward declarations so INVOKE reaches callees defined later in the file.
 ink_wbits    PROTO STDCALL :DWORD                       ; DWORD ink_wbits(DWORD) - int to float bits
 ink_make_pen PROTO STDCALL :DWORD                       ; GpPen *ink_make_pen(Stroke *s)
+ink_make_pen_w PROTO STDCALL :DWORD, :DWORD             ; GpPen *ink_make_pen_w(Stroke *s, DWORD w) - explicit width
 ink_draw_pts PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; void ink_draw_pts(gfx, pen, GpPoint*, n)
 ink_draw_one PROTO STDCALL :DWORD                       ; void ink_draw_one(Stroke *s)
 ink_alpha    PROTO STDCALL                              ; void ink_alpha(void) - force Working alpha 255
@@ -303,13 +304,16 @@ end_done:
 ink_end ENDP
 
 ; ---------------------------------------------------------------------------
-; ink_preview(hdc, dy) - draw the in-progress stroke onto a paint DC, pushed
-; down by dy (the toolbar height) to sit over the image. No-op when no stroke is
-; live, so the Editor can call it unconditionally after its BitBlt.
+; ink_preview(hdc, ox, oy, vw, vh, sw, sh) - draw the in-progress stroke onto a
+; paint DC, scaled into the Editor's view: (sw,sh) is the Snip's size, (vw,vh) the
+; fitted image area, and (ox,oy) its client origin. No-op when no stroke is live,
+; so the Editor can call it unconditionally after its image draw.
 ; ---------------------------------------------------------------------------
-ink_preview PROC USES ebx esi edi hdc:DWORD, dy:SDWORD
+ink_preview PROC USES ebx esi edi hdc:DWORD, ox:SDWORD, oy:SDWORD, vw:DWORD, vh:DWORD, sw:DWORD, sh:DWORD
     LOCAL gfx:DWORD
     LOCAL pen:DWORD
+    LOCAL cnt:DWORD
+    LOCAL npts:DWORD
 
     mov  eax, ink_cur
     cmp  eax, -1
@@ -318,43 +322,58 @@ ink_preview PROC USES ebx esi edi hdc:DWORD, dy:SDWORD
     lea  ebx, ink_strokes
     add  ebx, eax
 
+    cmp  sw, 1
+    jl   pv_done
+    cmp  sh, 1
+    jl   pv_done
+
     mov  gfx, 0
     INVOKE GdipCreateFromHDC, hdc, ADDR gfx
     cmp  gfx, 0
     je   pv_done
     INVOKE GdipSetSmoothingMode, gfx, SmoothingModeAntiAlias
 
-    INVOKE ink_make_pen, ebx
+    ; The pen width scales with the view too, so a fitted stroke is as thick live
+    ; as it will be once committed (but never thinner than one pixel).
+    INVOKE MulDiv, [ebx].Stroke.w, vw, sw
+    cmp  eax, 1
+    jge  pv_w
+    mov  eax, 1
+pv_w:
+    INVOKE ink_make_pen_w, ebx, eax
     mov  pen, eax
     test eax, eax
     jz   pv_close
 
-    ; Copy the points with dy added, so the arena itself stays image-relative.
-    mov  eax, [ebx].Stroke.first
-    shl  eax, 3
-    add  eax, OFFSET ink_pts
-    mov  esi, eax
-    lea  edi, ink_tmp
+    ; Copy the points, scaled into the view and offset. The count lives in a
+    ; local because MulDiv clobbers ecx.
     mov  ecx, [ebx].Stroke.n
     cmp  ecx, INK_STROKE_MAX
     jle  pv_n
     mov  ecx, INK_STROKE_MAX
 pv_n:
-    mov  edx, ecx
+    mov  npts, ecx
+    mov  cnt, ecx
+    mov  eax, [ebx].Stroke.first
+    shl  eax, 3
+    add  eax, OFFSET ink_pts
+    mov  esi, eax
+    lea  edi, ink_tmp
 pv_copy:
-    test ecx, ecx
-    jz   pv_draw
-    mov  eax, [esi]
+    cmp  cnt, 0
+    jle  pv_draw
+    INVOKE MulDiv, [esi], vw, sw
+    add  eax, ox
     mov  [edi], eax
-    mov  eax, [esi+4]
-    add  eax, dy
+    INVOKE MulDiv, [esi+4], vh, sh
+    add  eax, oy
     mov  [edi+4], eax
     add  esi, 8
     add  edi, 8
-    dec  ecx
+    dec  cnt
     jmp  pv_copy
 pv_draw:
-    INVOKE ink_draw_pts, gfx, pen, OFFSET ink_tmp, edx
+    INVOKE ink_draw_pts, gfx, pen, OFFSET ink_tmp, npts
     INVOKE GdipDeletePen, pen
 
 pv_close:
@@ -660,31 +679,44 @@ dp_done:
 ink_draw_pts ENDP
 
 ; ---------------------------------------------------------------------------
-; ink_make_pen(Stroke *s) -> GpPen * in eax, or 0. GDI+ wants a REAL width, so
-; the integer pixel width is converted to its float bits.
+; ink_make_pen(Stroke *s) -> GpPen * in eax, or 0. The stroke's own width; the
+; committed rasterisation path uses this.
 ; ---------------------------------------------------------------------------
-ink_make_pen PROC USES ebx s:DWORD
+ink_make_pen PROC s:DWORD
+    mov  eax, s
+    mov  ecx, [eax].Stroke.w
+    INVOKE ink_make_pen_w, eax, ecx
+    ret
+ink_make_pen ENDP
+
+; ---------------------------------------------------------------------------
+; ink_make_pen_w(Stroke *s, DWORD w) -> GpPen * in eax, or 0. As ink_make_pen,
+; but with an explicit pixel width: the Editor's live preview scales the pen with
+; its fit, while a committed stroke keeps the stroke's own width. GDI+ wants a
+; REAL width, so the integer is converted to its float bits.
+; ---------------------------------------------------------------------------
+ink_make_pen_w PROC USES ebx s:DWORD, w:DWORD
     LOCAL pen:DWORD
     LOCAL wf:DWORD
 
     mov  ebx, s
     mov  pen, 0
-    INVOKE ink_wbits, [ebx].Stroke.w
+    INVOKE ink_wbits, w
     mov  wf, eax
     INVOKE GdipCreatePen1, [ebx].Stroke.color, wf, UnitPixel, ADDR pen
     test eax, eax
-    jnz  mp_no
+    jnz  mpw_no
     cmp  pen, 0
-    je   mp_no
+    je   mpw_no
     INVOKE GdipSetPenStartCap, pen, LineCapRound
     INVOKE GdipSetPenEndCap, pen, LineCapRound
     INVOKE GdipSetPenLineJoin, pen, LineJoinRound
     mov  eax, pen
     ret
-mp_no:
+mpw_no:
     xor  eax, eax
     ret
-ink_make_pen ENDP
+ink_make_pen_w ENDP
 
 ; ---------------------------------------------------------------------------
 ; ink_alpha() - repair Working's alpha after GDI+ drawing, from Pristine. GDI+

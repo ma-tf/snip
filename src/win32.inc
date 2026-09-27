@@ -173,6 +173,10 @@ GdipCreateBitmapFromScan0 PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, 
 GdipGetImageGraphicsContext PROTO STDCALL :DWORD, :DWORD
 GdipDisposeImage     PROTO STDCALL :DWORD
 GdipDrawImageI       PROTO STDCALL :DWORD, :DWORD, :SDWORD, :SDWORD  ; (gfx, image, x, y)
+; ticket 17: scale the Snip into the Editor's image area, and pick a decent
+; downscale filter.
+GdipDrawImageRectI   PROTO STDCALL :DWORD, :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD  ; (gfx, image, x, y, w, h)
+GdipSetInterpolationMode PROTO STDCALL :DWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
 ; Window styles and messages (numeric values from the SDK headers)
@@ -180,6 +184,8 @@ GdipDrawImageI       PROTO STDCALL :DWORD, :DWORD, :SDWORD, :SDWORD  ; (gfx, ima
 WS_CAPTION          EQU 00C00000h
 WS_SYSMENU          EQU 00080000h
 WS_MINIMIZEBOX      EQU 00020000h
+WS_MAXIMIZEBOX      EQU 00010000h
+WS_THICKFRAME       EQU 00040000h
 WS_CHILD            EQU 40000000h
 WS_VISIBLE          EQU 10000000h
 WS_TABSTOP          EQU 00010000h
@@ -206,6 +212,7 @@ DEFAULT_GUI_FONT    EQU 17
 
 WM_CREATE           EQU 0001h
 WM_DESTROY          EQU 0002h
+WM_SIZE             EQU 0005h
 WM_PAINT            EQU 000Fh
 WM_CLOSE            EQU 0010h
 WM_ERASEBKGND       EQU 0014h
@@ -219,6 +226,9 @@ WM_COMMAND          EQU 0111h
 WM_SETFONT          EQU 0030h
 WM_CAPTURECHANGED   EQU 0215h          ; mouse capture moved; end a drag cleanly
 WM_DPICHANGED       EQU 02E0h          ; the window's effective DPI changed
+WM_GETMINMAXINFO    EQU 0024h          ; the window is asked for its size limits
+
+SIZE_MINIMIZED      EQU 1              ; WM_SIZE wParam: not a user size choice
 
 BN_CLICKED          EQU 0
 CBN_SELCHANGE       EQU 1
@@ -328,6 +338,7 @@ CAP_TIMEOUT_MS          EQU 2000         ; how long the UI thread waits on a Pri
 FillModeWinding          EQU 1            ; nonzero fill: a self-crossing loop fills
 FlushIntentionSync       EQU 1            ; GdipFlush: drain batched rendering now
 PixelFormat32bppARGB     EQU 0026200Ah    ; straight alpha, GDI+ canonical
+InterpolationModeHighQualityBicubic EQU 6 ; the downscale filter for a fitted Snip
 
 ; ---------------------------------------------------------------------------
 ; Structures (exact x86 layouts from the SDK headers)
@@ -430,6 +441,17 @@ MONITORINFO STRUCT
     rcWork      RECT <>
     dwFlags     DWORD ?
 MONITORINFO ENDS                       ; sizeof == 40
+
+; MINMAXINFO (winuser.h): five POINTs, no padding on x86. WM_GETMINMAXINFO's
+; lParam points at one; the Editor sets ptMinTrackSize so it cannot be dragged
+; below the toolbar.
+MINMAXINFO STRUCT
+    ptReserved     POINT <>
+    ptMaxSize      POINT <>
+    ptMaxPosition  POINT <>
+    ptMinTrackSize POINT <>
+    ptMaxTrackSize POINT <>
+MINMAXINFO ENDS                        ; sizeof == 40
 
 ; --- ticket 05: COM/WIC, clipboard, and Save As layouts --------------------
 ; GUID (guiddef.h): DWORD, WORD, WORD, BYTE[8]. MASM's default structure packing
