@@ -181,6 +181,12 @@ new Snip changes only the image and leaves the size and position alone.
 - **The Overlay is not in the snip only because it excludes itself.** If that
   `SetWindowDisplayAffinity` call is ever removed, the dim appears in every snip.
   See [`docs/overlay.md`](overlay.md).
+- **`rep movsd` copies ESI to EDI, not EDI to ESI.** `dib_mirror` populates the
+  Pristine twin, so the *source* must be Working and the *destination* Pristine.
+  Getting the pair the wrong way round copies the zeroed Pristine over Working and
+  silently blanks every Snip — the Editor then draws a fully transparent image, so
+  it looks like nothing was captured at all. This shipped in ticket 07 and was
+  caught while verifying ticket 17.
 
 ## See also
 

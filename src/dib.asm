@@ -351,8 +351,8 @@ dib_fill_opaque ENDP
 ; ---------------------------------------------------------------------------
 dib_mirror PROC USES ebx esi edi sn:DWORD
     mov  ebx, sn
-    mov  edi, [ebx].Snip.bits
-    mov  esi, [ebx].Snip.pbits
+    mov  edi, [ebx].Snip.pbits      ; destination: the Pristine twin
+    mov  esi, [ebx].Snip.bits       ; source: Working, freshly captured
     test edi, edi
     jz   dm_done
     test esi, esi
