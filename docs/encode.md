@@ -60,7 +60,7 @@ it an OLE stream. There is no second copy of the image and no GDI object.
 **The clipboard gets three formats.** `CF_DIBV5` (a `BITMAPV5HEADER` with RGBA
 masks and `LCS_sRGB`, then the pixels), a registered `"PNG"` format (the encoded
 bytes), and `CF_DIB` (a `BITMAPINFOHEADER` and the pixels). `CF_DIBV5` carries
-the alpha a free-form cut will have (ticket 07); `CF_DIB`/`CF_BITMAP` would be
+the alpha a free-form cut has (ticket 07); `CF_DIB`/`CF_BITMAP` would be
 synthesised from it, but the ticket asks for `CF_DIB` explicitly. The PNG is
 encoded into an OLE stream first, then copied into an exactly-sized `GMEM_MOVABLE`
 handle: `SetClipboardData` takes `GlobalSize` as the format length, and the

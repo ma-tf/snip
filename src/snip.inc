@@ -108,6 +108,7 @@ shell_create PROTO STDCALL :DWORD   ; HWND shell_create(App *app) - see shell.as
 overlay_show    PROTO STDCALL :DWORD, :DWORD        ; BOOL overlay_show(App *app, DWORD mode)
 overlay_hide    PROTO STDCALL :DWORD                ; void overlay_hide(App *app)
 overlay_repaint PROTO STDCALL :DWORD, :DWORD, :DWORD  ; void overlay_repaint(App *app, Rect *sel, DWORD down)
+overlay_repaint_free PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; void overlay_repaint_free(App *app, Pt *pts, DWORD n, Rect *bbox)
 overlay_set_dpi PROTO STDCALL :DWORD                ; void overlay_set_dpi(DWORD dpi) - re-lay-out chrome
 
 ; select.asm - the Selection state machine and its session lifecycle.
@@ -124,6 +125,19 @@ geo_normalise PROTO STDCALL :DWORD, :DWORD, :DWORD  ; void geo_normalise(Rect *r
 geo_width     PROTO STDCALL :DWORD                  ; SDWORD geo_width(Rect *r)
 geo_height    PROTO STDCALL :DWORD                  ; SDWORD geo_height(Rect *r)
 
+; mask.asm - pure free-form Trace geometry. Win32-free; includes only snip.inc.
+; It owns the fixed point buffer and nothing else: the sampling acceptance
+; test, Ramer-Douglas-Peucker simplification, the inclusive bbox, and the
+; degenerate test. The impure GDI+ coverage fill lives in dib.asm.
+mask_reset     PROTO STDCALL :DWORD                        ; void mask_reset(DWORD dpi) - clear the Trace, set the sample threshold
+mask_add       PROTO STDCALL :SDWORD, :SDWORD              ; BOOL mask_add(x, y) - accept if the pointer moved far enough
+mask_bbox      PROTO STDCALL :DWORD                        ; void mask_bbox(Rect *out) - inclusive bbox of the accepted points
+mask_simplify  PROTO STDCALL                               ; void mask_simplify(void) - RDP eps=1, in place
+mask_translate PROTO STDCALL :SDWORD, :SDWORD              ; void mask_translate(dx, dy) - move points and bbox to screen pixels
+mask_count     PROTO STDCALL                               ; DWORD mask_count(void) - path points: simplified after release, raw during the drag
+mask_points    PROTO STDCALL                               ; Pt *mask_points(void) - simplified points (Pt == GpPoint)
+mask_degenerate PROTO STDCALL                              ; BOOL mask_degenerate(void) - too few points or a sub-2x2 bbox
+
 ; capture.asm - screen capture. Ticket 03 blits the Selection's region straight
 ; from the screen DC into a caller's bitmap; ticket 08 adds the PrintWindow path
 ; for window mode. It owns no state between calls.
@@ -135,6 +149,7 @@ capture_region PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; BOOL capture_regi
 ; dib.asm - the Snip: ownership, alpha synthesis, and the Pristine twin. The
 ; crop maths stays in geometry.asm; this module is the impure DIB plumbing.
 dib_crop PROTO STDCALL :DWORD   ; BOOL dib_crop(Rect *sel) - SCREEN pixels; atomic: a failure keeps the old Snip
+dib_crop_free PROTO STDCALL :DWORD, :DWORD, :DWORD  ; BOOL dib_crop_free(Rect *bbox, Pt *path, DWORD n) - free-form cut; SCREEN pixels
 dib_snip PROTO STDCALL          ; Snip *dib_snip(void)
 
 ; editor.asm - the Editor window. Created once, resized and reused per Snip.

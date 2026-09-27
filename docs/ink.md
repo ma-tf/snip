@@ -85,10 +85,11 @@ it were drawn into Working incrementally, every frame would darken the last.
 ## Gotchas
 
 - **GDI+ ruins the alpha channel of a DIB surface.** Drawing through an HDC leaves
-  the destination's alpha unusable. A rectangular Snip is fully opaque, so after
-  every drawing pass `ink_alpha` forces the alpha byte back to 255 — the invariant
-  WIC relies on. A free-form Snip (ticket 07) has real coverage alpha and will need
-  a scratch ink layer instead of drawing into Working directly.
+  the destination's alpha unusable, so after every drawing pass `ink_alpha`
+  restores it — from **Pristine**, not by forcing 255. Pristine carries the Snip's
+  true alpha: 255 everywhere for a rectangle, the coverage mask for a free-form
+  cut (ticket 07). Restoring from it keeps both cases right; forcing 255 would
+  erase a free-form edge.
 - **`GdiplusShutdown` never runs.** `WinMainASM` ends in `ExitProcess`, so the
   process reclaims GDI+ without an explicit teardown. Harmless, and noted so it is
   not mistaken for a leak.

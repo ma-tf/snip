@@ -132,6 +132,22 @@ GdipSetPenStartCap   PROTO STDCALL :DWORD, :DWORD
 GdipSetPenEndCap     PROTO STDCALL :DWORD, :DWORD
 GdipSetPenLineJoin   PROTO STDCALL :DWORD, :DWORD
 
+; The free-form cut (ticket 07): a GraphicsPath filled antialiased into a
+; scratch bitmap whose alpha is the coverage mask, plus image drawing for the
+; Editor's alpha-aware paint. A path is built from GpPoints (INT x, INT y), the
+; same layout as our Pt.
+GdipCreatePath       PROTO STDCALL :DWORD, :DWORD   ; (GpFillMode, GpPath**)
+GdipDeletePath       PROTO STDCALL :DWORD
+GdipAddPathPolygonI  PROTO STDCALL :DWORD, :DWORD, :DWORD  ; (path, GpPoint*, count)
+GdipCreateSolidFill  PROTO STDCALL :DWORD, :DWORD   ; (ARGB, GpSolidFill**)
+GdipDeleteBrush      PROTO STDCALL :DWORD
+GdipFillPath         PROTO STDCALL :DWORD, :DWORD, :DWORD  ; (gfx, brush, path)
+GdipFlush            PROTO STDCALL :DWORD, :DWORD   ; (gfx, GpFlushIntention)
+GdipCreateBitmapFromScan0 PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+GdipGetImageGraphicsContext PROTO STDCALL :DWORD, :DWORD
+GdipDisposeImage     PROTO STDCALL :DWORD
+GdipDrawImageI       PROTO STDCALL :DWORD, :DWORD, :SDWORD, :SDWORD  ; (gfx, image, x, y)
+
 ; ---------------------------------------------------------------------------
 ; Window styles and messages (numeric values from the SDK headers)
 ; ---------------------------------------------------------------------------
@@ -271,6 +287,11 @@ SmoothingModeAntiAlias   EQU 4            ; GDI+ antialiased rasterisation
 UnitPixel                EQU 2            ; a pen width is in device pixels
 LineCapRound             EQU 2            ; round caps, so a stroke has soft ends
 LineJoinRound            EQU 2            ; round joins, so joints don't spike
+
+; --- ticket 07: GDI+ path and pixel-format constants -----------------------
+FillModeWinding          EQU 1            ; nonzero fill: a self-crossing loop fills
+FlushIntentionSync       EQU 1            ; GdipFlush: drain batched rendering now
+PixelFormat32bppARGB     EQU 0026200Ah    ; straight alpha, GDI+ canonical
 
 ; ---------------------------------------------------------------------------
 ; Structures (exact x86 layouts from the SDK headers)

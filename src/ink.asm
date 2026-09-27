@@ -687,15 +687,21 @@ mp_no:
 ink_make_pen ENDP
 
 ; ---------------------------------------------------------------------------
-; ink_alpha() - force Working's alpha byte to 255. GDI+ leaves the alpha of a
-; DIB surface unusable, and a rectangular Snip is opaque, so this restores the
-; invariant WIC relies on.
+; ink_alpha() - repair Working's alpha after GDI+ drawing, from Pristine. GDI+
+; leaves the alpha of a DIB surface unusable, so a committed stroke would
+; otherwise wreck it. Pristine carries the Snip's true alpha: 255 everywhere for
+; a rectangular Snip, the free-form coverage mask for a free-form one (ticket
+; 07). Restoring from Pristine keeps both cases correct; forcing 255 would erase
+; a free-form cut.
 ; ---------------------------------------------------------------------------
-ink_alpha PROC USES ebx edi
+ink_alpha PROC USES ebx esi edi
     INVOKE dib_snip
     mov  ebx, eax
     mov  edi, [ebx].Snip.bits
+    mov  esi, [ebx].Snip.pbits
     test edi, edi
+    jz   aa_done
+    test esi, esi
     jz   aa_done
     mov  ecx, [ebx].Snip.w
     cmp  ecx, 1
@@ -704,9 +710,12 @@ ink_alpha PROC USES ebx edi
     cmp  eax, 1
     jl   aa_done
     imul ecx, eax
-    mov  eax, 0FF000000h
 aa_loop:
-    or   dword ptr [edi], eax
+    mov  eax, [esi]
+    and  eax, 0FF000000h
+    and  dword ptr [edi], 000FFFFFFh
+    or   [edi], eax
+    add  esi, 4
     add  edi, 4
     dec  ecx
     jnz  aa_loop

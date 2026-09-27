@@ -28,17 +28,23 @@ include win32.inc
 PUBLIC overlay_show
 PUBLIC overlay_hide
 PUBLIC overlay_repaint
+PUBLIC overlay_repaint_free
 PUBLIC overlay_set_dpi
 
 ; Forward declarations so INVOKE reaches them.
 ovl_register    PROTO STDCALL :DWORD          ; BOOL ovl_register(App *app)
 ovl_present     PROTO STDCALL :DWORD, :DWORD, :DWORD  ; void ovl_present(App *app, Rect *sel, DWORD down)
+ovl_present_free PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; void ovl_present_free(App *app, Pt *pts, DWORD n, Rect *bbox)
+ovl_commit      PROTO STDCALL :DWORD          ; void ovl_commit(DWORD hwnd) - UpdateLayeredWindow the finished frame
 ovl_ensure_dib  PROTO STDCALL :DWORD          ; BOOL ovl_ensure_dib(App *app)
 ovl_free_dib    PROTO STDCALL                 ; void ovl_free_dib(void)
 ovl_fill_dim    PROTO STDCALL                 ; void ovl_fill_dim(void)
 ovl_clear_rect  PROTO STDCALL :DWORD          ; void ovl_clear_rect(Rect *sel)
 ovl_outline     PROTO STDCALL :DWORD          ; void ovl_outline(Rect *sel)
 ovl_readout     PROTO STDCALL :DWORD          ; void ovl_readout(Rect *sel)
+ovl_trace       PROTO STDCALL :DWORD, :DWORD  ; void ovl_trace(Pt *pts, DWORD n)
+ovl_blit_trace  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD  ; void ovl_blit_trace(src, col, row, w, h)
+ovl_wbits       PROTO STDCALL :DWORD          ; DWORD ovl_wbits(DWORD) - int to float bits
 ovl_hline       PROTO STDCALL :DWORD, :DWORD, :DWORD  ; void ovl_hline(row, col, span)
 ovl_putpx       PROTO STDCALL :DWORD, :DWORD  ; void ovl_putpx(row, col)
 ovl_fill_box    PROTO STDCALL :DWORD, :DWORD, :DWORD  ; void ovl_fill_box(bits, w, h)
@@ -86,6 +92,7 @@ ovl_vx        SDWORD ?         ; virtual-screen origin and size, read once per s
 ovl_vy        SDWORD ?
 ovl_vw        SDWORD ?
 ovl_vh        SDWORD ?
+ovl_pts       DWORD 8192*2 DUP(?)  ; bbox-local Trace for the preview stroke
 
 .code
 
@@ -200,6 +207,17 @@ overlay_repaint PROC app:DWORD, sel:DWORD, down:DWORD
 overlay_repaint ENDP
 
 ; ---------------------------------------------------------------------------
+; overlay_repaint_free(App *app, Pt *pts, DWORD n, Rect *bbox) - redraw and
+; present one free-form frame: the dim, the live Trace stroked antialiased, and
+; the readout naming the bbox. There is no rectangular hole or outline; the
+; Trace is the marker. Called on every accepted point during the drag.
+; ---------------------------------------------------------------------------
+overlay_repaint_free PROC app:DWORD, pts:DWORD, n:DWORD, bbox:DWORD
+    INVOKE ovl_present_free, app, pts, n, bbox
+    ret
+overlay_repaint_free ENDP
+
+; ---------------------------------------------------------------------------
 ; ovl_register(App *app) -> BOOL in eax. Register the Overlay class once.
 ; The cursor is the crosshair a selection is drawn with.
 ; ---------------------------------------------------------------------------
@@ -241,12 +259,6 @@ ovl_register ENDP
 ; into ovl_bits with no blending pass.
 ; ---------------------------------------------------------------------------
 ovl_present PROC USES ebx esi edi app:DWORD, sel:DWORD, down:DWORD
-    LOCAL src:POINT
-    LOCAL sz:SIZEW
-    LOCAL dst:POINT
-    LOCAL blend:BLENDFUNCTION
-    LOCAL hdcWin:DWORD
-
     mov  esi, app
     mov  edi, [esi].App.hwndOverlay
     test edi, edi
@@ -282,14 +294,69 @@ ovl_present PROC USES ebx esi edi app:DWORD, sel:DWORD, down:DWORD
     INVOKE ovl_readout, ebx
 
 op_chrome:
-    ; --- 4. present the finished frame, once: DWM never sees it half-drawn --
+    ; --- 4. present the finished frame, once ------------------------------
+    INVOKE ovl_commit, edi
+op_done:
+    ret
+ovl_present ENDP
+
+; ---------------------------------------------------------------------------
+; ovl_present_free(App *app, Pt *pts, DWORD n, Rect *bbox) - a free-form frame:
+; the dim, the live Trace stroked antialiased, then the readout. Same present as
+; ovl_present; only the middle differs.
+; ---------------------------------------------------------------------------
+ovl_present_free PROC USES ebx esi edi app:DWORD, pts:DWORD, n:DWORD, bbox:DWORD
+    mov  esi, app
+    mov  edi, [esi].App.hwndOverlay
+    test edi, edi
+    jz   pf_done
+
+    INVOKE ovl_ensure_dib, esi
+    test eax, eax
+    jz   pf_done
+
+    INVOKE ovl_fill_dim
+
+    mov  eax, n
+    cmp  eax, 2
+    jl   pf_readout
+    INVOKE ovl_trace, pts, n
+pf_readout:
+    mov  ebx, bbox
+    test ebx, ebx
+    jz   pf_commit
+    INVOKE geo_width, ebx
+    cmp  eax, 0
+    jle  pf_commit
+    INVOKE geo_height, ebx
+    cmp  eax, 0
+    jle  pf_commit
+    INVOKE ovl_readout, ebx
+pf_commit:
+    INVOKE ovl_commit, edi
+pf_done:
+    ret
+ovl_present_free ENDP
+
+; ---------------------------------------------------------------------------
+; ovl_commit(DWORD hwnd) - hand the finished DIB to UpdateLayeredWindow, once.
+; DWM never sees a half-drawn frame; present-once is what stops the flicker. dst
+; is in screen coordinates, so a negative virtual origin is honoured.
+; ---------------------------------------------------------------------------
+ovl_commit PROC USES edi hwnd:DWORD
+    LOCAL src:POINT
+    LOCAL sz:SIZEW
+    LOCAL dst:POINT
+    LOCAL blend:BLENDFUNCTION
+    LOCAL hdcWin:DWORD
+
+    mov  edi, hwnd
     mov  src.x, 0
     mov  src.y, 0
     mov  eax, ovl_vw
     mov  sz._cx, eax
     mov  eax, ovl_vh
     mov  sz._cy, eax
-    ; dst is in screen coordinates, so a negative virtual origin is honoured.
     mov  eax, ovl_vx
     mov  dst.x, eax
     mov  eax, ovl_vy
@@ -304,10 +371,8 @@ op_chrome:
     mov  hdcWin, eax
     INVOKE UpdateLayeredWindow, edi, hdcWin, ADDR dst, ADDR sz, ovl_dc, ADDR src, 0, ADDR blend, ULW_ALPHA
     INVOKE ReleaseDC, 0, hdcWin
-
-op_done:
     ret
-ovl_present ENDP
+ovl_commit ENDP
 
 ; ---------------------------------------------------------------------------
 ; ovl_ensure_dib(App *app) -> BOOL in eax. Create the screen-DC, the memory DC,
@@ -554,12 +619,442 @@ oo_done:
 ovl_outline ENDP
 
 ; ---------------------------------------------------------------------------
+; ovl_trace(Pt *pts, DWORD n) - stroke the live free-form Trace onto the Overlay
+; DIB, antialiased, as a dark halo under a light core so it reads on any
+; wallpaper.
+;
+; Drawn into a small transparent scratch bitmap through GDI+ (straight ARGB via
+; GdipCreateBitmapFromScan0), then composited into the premultiplied Overlay DIB
+; with source-over. Drawing GDI+ straight onto the DIB through a DC is not used:
+; GDI+ leaves a DIB surface's alpha unusable, and this DIB *is* alpha. The
+; scratch is only as big as the Trace, not the whole virtual screen.
+; ---------------------------------------------------------------------------
+ovl_trace PROC USES ebx esi edi pts:DWORD, n:DWORD
+    LOCAL minx:DWORD
+    LOCAL miny:DWORD
+    LOCAL maxx:DWORD
+    LOCAL maxy:DWORD
+    LOCAL x0:DWORD
+    LOCAL y0:DWORD
+    LOCAL sw:DWORD
+    LOCAL sh:DWORD
+    LOCAL halo:DWORD
+    LOCAL core:DWORD
+    LOCAL pad:DWORD
+    LOCAL hdib:DWORD
+    LOCAL bits:DWORD
+    LOCAL bmp:DWORD
+    LOCAL gfx:DWORD
+    LOCAL pen:DWORD
+    LOCAL wf:DWORD
+    LOCAL i:DWORD
+
+    mov  hdib, 0
+    mov  bmp, 0
+    mov  gfx, 0
+    mov  pen, 0
+
+    ; --- bbox of the raw points --------------------------------------------
+    mov  esi, pts
+    mov  eax, [esi]
+    mov  minx, eax
+    mov  maxx, eax
+    mov  eax, [esi+4]
+    mov  miny, eax
+    mov  maxy, eax
+    mov  i, 1
+ot_box:
+    mov  eax, i
+    cmp  eax, n
+    jge  ot_box_done
+    shl  eax, 3
+    mov  eax, [esi+eax]
+    cmp  eax, minx
+    jge  ot_b1
+    mov  minx, eax
+ot_b1:
+    cmp  eax, maxx
+    jle  ot_b2
+    mov  maxx, eax
+ot_b2:
+    mov  eax, i
+    shl  eax, 3
+    mov  eax, [esi+eax+4]
+    cmp  eax, miny
+    jge  ot_b3
+    mov  miny, eax
+ot_b3:
+    cmp  eax, maxy
+    jle  ot_b4
+    mov  maxy, eax
+ot_b4:
+    inc  i
+    jmp  ot_box
+ot_box_done:
+
+    ; --- pen widths, DPI-scaled (at least 1) -------------------------------
+    mov  eax, ovl_dpi
+    test eax, eax
+    jnz  ot_dpi
+    mov  eax, 96
+ot_dpi:
+    INVOKE MulDiv, 3, eax, 96
+    cmp  eax, 1
+    jge  ot_halo
+    mov  eax, 1
+ot_halo:
+    mov  halo, eax
+    mov  eax, halo
+    shr  eax, 1
+    inc  eax
+    mov  pad, eax
+
+    ; --- scratch bounds, clamped to the DIB --------------------------------
+    mov  eax, minx
+    sub  eax, pad
+    cmp  eax, 0
+    jge  ot_x0
+    xor  eax, eax
+ot_x0:
+    mov  x0, eax
+    mov  eax, miny
+    sub  eax, pad
+    cmp  eax, 0
+    jge  ot_y0
+    xor  eax, eax
+ot_y0:
+    mov  y0, eax
+
+    mov  eax, maxx
+    add  eax, 1
+    add  eax, pad
+    cmp  eax, ovl_vw
+    jle  ot_x1
+    mov  eax, ovl_vw
+ot_x1:
+    sub  eax, x0
+    mov  sw, eax
+    mov  eax, maxy
+    add  eax, 1
+    add  eax, pad
+    cmp  eax, ovl_vh
+    jle  ot_y1
+    mov  eax, ovl_vh
+ot_y1:
+    sub  eax, y0
+    mov  sh, eax
+
+    cmp  sw, 1
+    jl   ot_done
+    cmp  sh, 1
+    jl   ot_done
+
+    ; --- localize the points into ovl_pts ----------------------------------
+    mov  esi, pts
+    lea  edi, ovl_pts
+    xor  ecx, ecx
+ot_loc:
+    cmp  ecx, n
+    jge  ot_loc_done
+    mov  eax, [esi]
+    sub  eax, x0
+    mov  [edi], eax
+    mov  eax, [esi+4]
+    sub  eax, y0
+    mov  [edi+4], eax
+    add  esi, 8
+    add  edi, 8
+    inc  ecx
+    jmp  ot_loc
+ot_loc_done:
+
+    ; --- a zeroed scratch bitmap -------------------------------------------
+    mov  scr_bmi.biSize, SIZEOF BITMAPINFOHEADER
+    mov  eax, sw
+    mov  scr_bmi.biWidth, eax
+    mov  eax, sh
+    neg  eax
+    mov  scr_bmi.biHeight, eax
+    mov  scr_bmi.biPlanes, 1
+    mov  scr_bmi.biBitCount, 32
+    mov  scr_bmi.biCompression, BI_RGB
+    mov  scr_bmi.biSizeImage, 0
+    mov  scr_bmi.biXPelsPerMeter, 0
+    mov  scr_bmi.biYPelsPerMeter, 0
+    mov  scr_bmi.biClrUsed, 0
+    mov  scr_bmi.biClrImportant, 0
+
+    INVOKE CreateDIBSection, ovl_scr, OFFSET scr_bmi, DIB_RGB_COLORS, ADDR bits, 0, 0
+    mov  hdib, eax
+    test eax, eax
+    jz   ot_done
+    mov  edi, bits
+    mov  ecx, sw
+    imul ecx, sh
+    xor  eax, eax
+    rep  stosd
+
+    ; --- GDI+ the two strokes ----------------------------------------------
+    mov  eax, sw
+    shl  eax, 2
+    mov  wf, eax
+    INVOKE GdipCreateBitmapFromScan0, sw, sh, wf, PixelFormat32bppARGB, bits, ADDR bmp
+    test eax, eax
+    jnz  ot_clean
+    INVOKE GdipGetImageGraphicsContext, bmp, ADDR gfx
+    test eax, eax
+    jnz  ot_clean
+    INVOKE GdipSetSmoothingMode, gfx, SmoothingModeAntiAlias
+
+    ; halo: opaque dark, halo px wide
+    INVOKE ovl_wbits, halo
+    mov  wf, eax
+    INVOKE GdipCreatePen1, 0FF000000h, wf, UnitPixel, ADDR pen
+    test eax, eax
+    jnz  ot_clean
+    INVOKE GdipSetPenStartCap, pen, LineCapRound
+    INVOKE GdipSetPenEndCap, pen, LineCapRound
+    INVOKE GdipSetPenLineJoin, pen, LineJoinRound
+    INVOKE GdipDrawLinesI, gfx, pen, OFFSET ovl_pts, n
+    INVOKE GdipDeletePen, pen
+    mov  pen, 0
+
+    ; core: opaque light, 1px
+    INVOKE ovl_wbits, 1
+    mov  wf, eax
+    INVOKE GdipCreatePen1, 0FFFFFFFFh, wf, UnitPixel, ADDR pen
+    test eax, eax
+    jnz  ot_clean
+    INVOKE GdipSetPenStartCap, pen, LineCapRound
+    INVOKE GdipSetPenEndCap, pen, LineCapRound
+    INVOKE GdipSetPenLineJoin, pen, LineJoinRound
+    INVOKE GdipDrawLinesI, gfx, pen, OFFSET ovl_pts, n
+    INVOKE GdipDeletePen, pen
+    mov  pen, 0
+
+    INVOKE GdipFlush, gfx, FlushIntentionSync
+
+    ; --- composite the scratch into the overlay DIB ------------------------
+    INVOKE ovl_blit_trace, bits, x0, y0, sw, sh
+
+ot_clean:
+    cmp  pen, 0
+    jz   ot_np
+    INVOKE GdipDeletePen, pen
+ot_np:
+    cmp  gfx, 0
+    jz   ot_ng
+    INVOKE GdipDeleteGraphics, gfx
+ot_ng:
+    cmp  bmp, 0
+    jz   ot_nb
+    INVOKE GdipDisposeImage, bmp
+ot_nb:
+    cmp  hdib, 0
+    jz   ot_done
+    INVOKE DeleteObject, hdib
+
+ot_done:
+    ret
+ovl_trace ENDP
+
+; ---------------------------------------------------------------------------
+; ovl_wbits(DWORD) -> the 32 bits of (float)arg in eax. GDI+ takes REAL pen
+; widths; this is where the integer becomes one.
+; ---------------------------------------------------------------------------
+ovl_wbits PROC w:DWORD
+    fild dword ptr w
+    sub  esp, 4
+    fstp dword ptr [esp]
+    pop  eax
+    ret
+ovl_wbits ENDP
+
+; ---------------------------------------------------------------------------
+; ovl_blit_trace(src, col, row, w, h) - composite a straight-ARGB scratch DIB
+; into the premultiplied overlay DIB with source-over. An opaque pixel is a
+; straight move; only the antialiased edge needs the blend. Clipped to the DIB.
+; ---------------------------------------------------------------------------
+ovl_blit_trace PROC USES ebx esi edi edx ecx src:DWORD, col:DWORD, row:DWORD, w:DWORD, h:DWORD
+    LOCAL t_sy:DWORD
+    LOCAL t_sx:DWORD
+    LOCAL t_dx:DWORD
+    LOCAL t_dy:DWORD
+    LOCAL t_s:DWORD
+    LOCAL t_a:DWORD
+    LOCAL t_inv:DWORD
+    LOCAL t_out:DWORD
+
+    mov  t_sy, 0
+trc_row:
+    mov  eax, t_sy
+    cmp  eax, h
+    jge  trc_done
+    mov  eax, row
+    add  eax, t_sy
+    mov  t_dy, eax
+    cmp  eax, 0
+    jl   trc_next_row
+    cmp  eax, ovl_vh
+    jge  trc_done
+
+    mov  t_sx, 0
+trc_col:
+    mov  eax, t_sx
+    cmp  eax, w
+    jge  trc_next_row
+    mov  eax, col
+    add  eax, t_sx
+    mov  t_dx, eax
+    cmp  eax, 0
+    jl   trc_next_col
+    cmp  eax, ovl_vw
+    jge  trc_next_row
+
+    ; s = src[(sy*w + sx)*4]
+    mov  eax, t_sy
+    imul eax, w
+    add  eax, t_sx
+    mov  esi, src
+    mov  edx, [esi+eax*4]
+    mov  t_s, edx
+    mov  eax, edx
+    shr  eax, 24
+    and  eax, 0FFh
+    mov  t_a, eax
+    test eax, eax
+    jz   trc_next_col
+    cmp  eax, 255
+    jne  trc_blend
+
+    ; destination pointer
+    mov  eax, t_dy
+    imul eax, ovl_vw
+    add  eax, t_dx
+    mov  edi, ovl_bits
+    lea  edi, [edi+eax*4]
+
+    ; opaque source: a straight move, already premultiplied
+    mov  eax, t_s
+    mov  [edi], eax
+    jmp  trc_next_col
+
+trc_blend:
+    mov  ecx, 255
+    sub  ecx, eax
+    mov  t_inv, ecx
+
+    ; destination pointer
+    mov  eax, t_dy
+    imul eax, ovl_vw
+    add  eax, t_dx
+    mov  edi, ovl_bits
+    lea  edi, [edi+eax*4]
+
+    ; --- out red = src.r*a/255 + dst.r*inv/255 ---
+    mov  eax, t_s
+    and  eax, 000FF0000h
+    shr  eax, 16
+    imul eax, t_a
+    xor  edx, edx
+    mov  ecx, 255
+    div  ecx
+    mov  ebx, eax
+    mov  eax, [edi]
+    and  eax, 000FF0000h
+    shr  eax, 16
+    imul eax, t_inv
+    xor  edx, edx
+    mov  ecx, 255
+    div  ecx
+    add  ebx, eax
+    cmp  ebx, 255
+    jle  trc_r
+    mov  ebx, 255
+trc_r:
+    shl  ebx, 16
+    mov  t_out, ebx
+
+    ; --- out green ---
+    mov  eax, t_s
+    and  eax, 00000FF00h
+    shr  eax, 8
+    imul eax, t_a
+    xor  edx, edx
+    mov  ecx, 255
+    div  ecx
+    mov  ebx, eax
+    mov  eax, [edi]
+    and  eax, 00000FF00h
+    shr  eax, 8
+    imul eax, t_inv
+    xor  edx, edx
+    mov  ecx, 255
+    div  ecx
+    add  ebx, eax
+    cmp  ebx, 255
+    jle  trc_g
+    mov  ebx, 255
+trc_g:
+    shl  ebx, 8
+    or   t_out, ebx
+
+    ; --- out blue ---
+    mov  eax, t_s
+    and  eax, 0000000FFh
+    imul eax, t_a
+    xor  edx, edx
+    mov  ecx, 255
+    div  ecx
+    mov  ebx, eax
+    mov  eax, [edi]
+    and  eax, 0000000FFh
+    imul eax, t_inv
+    xor  edx, edx
+    mov  ecx, 255
+    div  ecx
+    add  ebx, eax
+    cmp  ebx, 255
+    jle  trc_b
+    mov  ebx, 255
+trc_b:
+    or   t_out, ebx
+
+    ; --- out alpha = a + dst.a*inv/255 ---
+    mov  eax, [edi]
+    shr  eax, 24
+    and  eax, 0FFh
+    imul eax, t_inv
+    xor  edx, edx
+    mov  ecx, 255
+    div  ecx
+    add  eax, t_a
+    cmp  eax, 255
+    jle  trc_a
+    mov  eax, 255
+trc_a:
+    shl  eax, 24
+    or   t_out, eax
+
+    mov  eax, t_out
+    mov  [edi], eax
+
+trc_next_col:
+    inc  t_sx
+    jmp  trc_col
+trc_next_row:
+    inc  t_sy
+    jmp  trc_row
+trc_done:
+    ret
+ovl_blit_trace ENDP
+
+; ---------------------------------------------------------------------------
 ; ovl_hline(row, col, span) - write span opaque pixels on one row. Clipped to
 ; the DIB; a no-op off-screen or empty.
 ; ---------------------------------------------------------------------------
 ovl_hline PROC USES edi edx ecx row:DWORD, col:DWORD, span:DWORD
-    cmp  span, 0
-    jle  oh_done
+
     mov  edx, row
     cmp  edx, 0
     jl   oh_done

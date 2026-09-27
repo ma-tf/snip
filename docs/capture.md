@@ -12,7 +12,7 @@ Pristine twin — and the Editor is sized to it and painted.
 
 The Snip is the unit the rest of the app is about. The Editor annotates it
 (ticket 06), Copy and Save As publish it ([`docs/encode.md`](encode.md)), and
-free-form mode will cut its alpha (ticket 07). None of them re-capture; they all
+free-form mode cuts its alpha (ticket 07). None of them re-capture; they all
 read the Snip.
 
 ## Where it lives
@@ -45,13 +45,15 @@ snip, not 400×300. `geo_width`/`geo_height` return the span, and `dib_crop` add
 the 1 for the crop — the `+1` the `geometry.asm` comment reserves for this module.
 Getting this the other way loses the Selection's last row and column.
 
-**Alpha is synthesised in the same pass as the twin.** The screen DC has no alpha
-channel, so GDI leaves the alpha byte as it found it, usually 0. `dib_alloc`
-walks the pixels once, ORs `0FF000000h` into each, and writes the result to
-*both* Working and Pristine. So a fresh Snip is straight (non-premultiplied) BGRA
-with alpha 255 everywhere, and the two bitmaps start byte-identical — which is
-what WIC wants (ticket 05) and what free-form and the Eraser will rely on
-(tickets 06/07).
+**Alpha is synthesised at build time, then mirrored to the twin.** The screen DC
+has no alpha channel, so GDI leaves the alpha byte as it found it, usually 0.
+`dib_build` allocates and captures but does not touch alpha; the crop then
+synthesises it. A rectangular, window, or full-screen Snip is opaque, so
+`dib_fill_opaque` ORs `0FF000000h` into each pixel. A free-form Snip takes
+per-pixel **coverage** from `dib_coverage` (ticket 07). Either way `dib_mirror`
+then copies Working into Pristine, so the two start byte-identical and Pristine
+carries the Snip's true alpha — which is what WIC wants (ticket 05) and what the
+Eraser and Undo rely on (ticket 06).
 
 **The crop is atomic.** `dib_crop` builds the new Snip in a stack local and only
 frees the previous one once the new one exists. A failed capture therefore leaves

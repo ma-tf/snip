@@ -54,6 +54,7 @@ sel_app    DWORD ?          ; App *, for the duration of the session
 sel_live   DWORD ?          ; 1 while a session is in flight, else 0
 sel_down   DWORD ?          ; 1 while the left button is held
 sel_mode   DWORD ?          ; the mode the session was started with
+sel_dpi    DWORD ?          ; the Overlay's effective DPI; scales the free-form sample threshold
 sel_vx     SDWORD ?         ; the virtual-screen origin, read at session start
 sel_vy     SDWORD ?
 sel_origin Pt <>            ; where the drag was pressed, in Overlay client pixels
@@ -73,9 +74,14 @@ select_begin PROC USES ebx esi edi app:DWORD
     cmp  sel_live, 0
     jne  sb_ok
 
-    ; ticket 02 is rectangular only: the drop-down does not select the gesture
-    ; yet. Tickets 07, 08, and 09 dispatch on App.mode here.
-    mov  sel_mode, MODE_RECT
+    ; The mode comes from the Shell's drop-down, clamped so a bad index cannot
+    ; select a branch that does not exist yet.
+    mov  eax, [esi].App.mode
+    cmp  eax, MODE_FREE
+    jbe  sb_mode_ok
+    xor  eax, eax
+sb_mode_ok:
+    mov  sel_mode, eax
 
     ; clear the stale Selection so a previous session cannot leak through
     mov  sel_down, 0
@@ -111,6 +117,20 @@ sb_raise:
     test eax, eax
     jz   sb_fail
 
+    ; The Overlay's effective DPI scales the free-form sample threshold. Read it
+    ; fresh every session, like the Overlay does, so a scale change is picked up.
+    mov  eax, [esi].App.hwndOverlay
+    INVOKE GetDpiForWindow, eax
+    test eax, eax
+    jnz  sb_dpi_ok
+    mov  eax, 96
+sb_dpi_ok:
+    mov  sel_dpi, eax
+    cmp  sel_mode, MODE_FREE
+    jne  sb_live
+    INVOKE mask_reset, sel_dpi
+
+sb_live:
     mov  sel_live, 1
 sb_ok:
     mov  eax, 1
@@ -150,8 +170,20 @@ sel_ldown PROC USES ebx lParam:DWORD
     mov  sel_cur.y, edx
 
     cmp  sel_mode, MODE_RECT
-    jne  sl_done
+    je   sl_rect
+    cmp  sel_mode, MODE_FREE
+    je   sl_free
+    jmp  sl_done                  ; window and full-screen: tickets 08 and 09
+
+sl_rect:
     INVOKE geo_normalise, ADDR sel_rect, ADDR sel_origin, ADDR sel_cur
+    mov  sel_down, 1
+    jmp  sl_done
+
+sl_free:
+    ; Press starts a fresh Trace; mask_add accepts the first point unconditionally.
+    INVOKE mask_reset, sel_dpi
+    INVOKE mask_add, sel_cur.x, sel_cur.y
     mov  sel_down, 1
 
 sl_done:
@@ -178,7 +210,18 @@ sel_mmove PROC USES ebx lParam:DWORD
     cmp  sel_down, 0
     je   sm_done
 
+    cmp  sel_mode, MODE_FREE
+    je   sm_free
+
     INVOKE geo_normalise, ADDR sel_rect, ADDR sel_origin, ADDR sel_cur
+    INVOKE sel_repaint
+    jmp  sm_done
+
+sm_free:
+    INVOKE mask_add, sel_cur.x, sel_cur.y
+    test eax, eax
+    jz   sm_done
+    INVOKE mask_bbox, ADDR sel_rect
     INVOKE sel_repaint
 
 sm_done:
@@ -191,10 +234,27 @@ sel_mmove ENDP
 ; the dependency runs one way: select -> overlay.
 ; ---------------------------------------------------------------------------
 sel_repaint PROC
+    LOCAL p:DWORD
+    LOCAL cnt:DWORD
+
     mov  eax, sel_app
     test eax, eax
     jz   sr_done
+
+    cmp  sel_mode, MODE_FREE
+    je   sr_free
+
     INVOKE overlay_repaint, eax, ADDR sel_rect, sel_down
+    jmp  sr_done
+
+sr_free:
+    INVOKE mask_points
+    mov  p, eax
+    INVOKE mask_count
+    mov  cnt, eax
+    mov  eax, sel_app
+    INVOKE overlay_repaint_free, eax, p, cnt, ADDR sel_rect
+
 sr_done:
     ret
 sel_repaint ENDP
@@ -209,6 +269,9 @@ sel_lup PROC
     mov  sel_down, 0
     INVOKE ReleaseCapture
 
+    cmp  sel_mode, MODE_FREE
+    je   su_free
+
     ; a click with no drag is not a Selection
     INVOKE geo_width, ADDR sel_rect
     cmp  eax, 0
@@ -217,6 +280,17 @@ sel_lup PROC
     cmp  eax, 0
     jle  su_done
 
+    INVOKE select_finish
+    jmp  su_done
+
+su_free:
+    ; Simplify, then refuse a degenerate Trace: the Overlay simply stays up
+    ; rather than producing a zero-size Snip.
+    INVOKE mask_simplify
+    INVOKE mask_bbox, ADDR sel_rect
+    INVOKE mask_degenerate
+    test eax, eax
+    jnz  su_done
     INVOKE select_finish
 
 su_done:
@@ -239,6 +313,8 @@ sel_lup ENDP
 ; the Editor showing it - intact; the visible error surface is ticket 11.
 ; ---------------------------------------------------------------------------
 select_finish PROC USES ebx esi
+    LOCAL p:DWORD
+
     cmp  sel_live, 0
     je   sf_off
 
@@ -246,7 +322,10 @@ select_finish PROC USES ebx esi
     test esi, esi
     jz   sf_off
 
-    ; virtual-relative -> screen pixels, inclusive bounds and all
+    cmp  sel_mode, MODE_FREE
+    je   sf_free
+
+    ; rect: virtual-relative -> screen pixels, inclusive bounds and all
     mov  eax, sel_vx
     add  sel_rect.left, eax
     add  sel_rect.right, eax
@@ -256,7 +335,20 @@ select_finish PROC USES ebx esi
 
     INVOKE dib_crop, ADDR sel_rect
     mov  ebx, eax
+    jmp  sf_cropped
 
+sf_free:
+    ; The Trace and its bbox move to screen pixels together; dib_crop_free then
+    ; makes the path bbox-local for the fill.
+    INVOKE mask_translate, sel_vx, sel_vy
+    INVOKE mask_bbox, ADDR sel_rect
+    INVOKE mask_points
+    mov  p, eax
+    INVOKE mask_count
+    INVOKE dib_crop_free, ADDR sel_rect, p, eax
+    mov  ebx, eax
+
+sf_cropped:
     INVOKE sel_restore
     mov  sel_live, 0
 
@@ -384,7 +476,8 @@ sw_display_done:
 sw_dpi:
     mov  eax, wParam
     movzx eax, ax                 ; LOWORD(wParam) is the new DPI
-    INVOKE overlay_set_dpi, eax
+    mov  sel_dpi, eax
+    INVOKE overlay_set_dpi, sel_dpi
     cmp  sel_live, 0
     je   sw_dpi_done
     INVOKE sel_repaint

@@ -41,6 +41,14 @@ outline, and stamp the readout plate. Then present once. DWM never sees a
 half-drawn frame — present-once is what stops the flicker a naive
 paint-to-the-window would show.
 
+**A free-form frame is a Trace, not a rectangle.** `overlay_repaint_free` skips
+the hole and the outline and instead strokes the live Trace antialiased — a dark
+halo under a light core — so it reads on any wallpaper and previews the edge the
+cut will have. The stroke is rendered into a small transparent scratch through
+GDI+ and composited into the premultiplied DIB with source-over; drawing GDI+
+straight onto the DIB through a DC would leave its alpha unusable. See
+[`docs/freeform.md`](freeform.md).
+
 **The readout is why this module uses `UpdateLayeredWindow` at all.** With
 `SetLayeredWindowAttributes(LWA_ALPHA)` alpha is a property of the *window*: a
 plate drawn over the dim composites to grey and its text washes out. The
@@ -98,6 +106,7 @@ window, not of a frame, so it is set once and never touched again.
 ## See also
 
 - [`docs/select.md`](select.md) — the Selection state machine that drives it.
+- [`docs/freeform.md`](freeform.md) — the live Trace preview.
 - [`docs/multimonitor.md`](multimonitor.md) — the coordinate spaces and DPI rules.
 - [`docs/research/overlay-selection-hit-testing.md`](research/overlay-selection-hit-testing.md)
   — the research this render path comes from.

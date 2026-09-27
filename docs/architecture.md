@@ -22,8 +22,8 @@ The eventual areas, in the order the spec names them: `snip` (entry and process 
 `shell` (the main window), `capture`, `dib`, `overlay`, `select`, `geometry`, `mask`, `editor`,
 `encode`. Ticket 06 added an eleventh, `ink` — the annotation engine, kept out of `editor` so
 the command log and the window chrome change for their own reasons. **Landed so far:** `snip`,
-`shell`, `geometry`, `capture`, `dib`, `overlay`, `select`, `editor`, `encode`, `ink`. Modules
-land as their tickets do; the build has no list to update.
+`shell`, `geometry`, `capture`, `dib`, `overlay`, `select`, `editor`, `encode`, `ink`, and now
+`mask` (ticket 07). Modules land as their tickets do; the build has no list to update.
 
 ## Where it lives
 
@@ -106,6 +106,12 @@ the build. The Eraser removes whole strokes and Undo reverses the last operation
 rewriting the log and replaying onto the Pristine twin — so the captured pixels are never
 drawn on and Undo stops at the pristine Snip. See [`docs/ink.md`](ink.md).
 
+**A free-form Snip is cut, not enclosed.** `mask.asm` holds the pure Trace geometry — sampling,
+RDP simplification, bbox, degenerate test — while `dib.asm` fills a GDI+ `GraphicsPath` onto a
+scratch bitmap whose alpha is the per-pixel coverage and applies it to the Snip. Winding fill
+forgives a self-crossing loop; the Overlay previews the same edge antialiased. See
+[`docs/freeform.md`](freeform.md).
+
 **Returns.** `eax` 0/nonzero for our own functions; Win32 `BOOL`/`HRESULT` values pass through
 untouched.
 
@@ -138,6 +144,7 @@ the linked build small and the Crinkler `size` build smaller still; see
 - [The Shell](shell.md) — the window, the ComboBoxEx controls, and the drawn icons.
 - [The Overlay](overlay.md) — the layered surface, the dim, and the readout chrome.
 - [The Selection](select.md) — the Snipping session and the drag state machine.
+- [Free-form snips](freeform.md) — the Trace geometry and the coverage Mask.
 - [The Snip and the capture path](capture.md) — the region blit, alpha synthesis, and the
   Editor window.
 - [Copy and Save As](encode.md) — WIC encoding, the clipboard formats, and the Save dialog.

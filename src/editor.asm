@@ -13,10 +13,11 @@
 ; topmost Overlay covers it anyway, but it is not excluded from capture, so a
 ; Selection over it would otherwise capture its pixels.
 ;
-; It paints from the Snip's own memory DC with a single BitBlt, offset below the
-; toolbar. The Snip is straight BGRA; for a rectangular Snip every pixel is
-; opaque, so a colour blit is exact. (Free-form cuts, ticket 07, will need
-; alpha-aware painting here.)
+; It paints from the Snip's pixels through GDI+, whose image path honours the
+; alpha channel, so a free-form cut shows its shape and the transparent region
+; reveals the backdrop below the toolbar. A rectangular Snip is opaque, so the
+; draw is identical to a blit. (Ticket 03 used a plain BitBlt; free-form, ticket
+; 07, needs the alpha here.)
 ;
 ; Copy and Save As hand the live Snip to encode.asm; nothing is re-captured. The
 ; annotations are already in the Working bitmap by then, so Copy and Save carry
@@ -422,12 +423,15 @@ editor_fit ENDP
 ; overdraw the in-progress stroke. BitBlt clips to the window, so a Snip capped
 ; by editor_fit shows its top-left corner and nothing else.
 ; ---------------------------------------------------------------------------
-editor_do_paint PROC USES ebx esi hwnd:DWORD
+editor_do_paint PROC USES ebx esi edi hwnd:DWORD
     LOCAL ps:PAINTSTRUCT
     LOCAL rc:RECT
     LOCAL srcW:DWORD
     LOCAL srcH:DWORD
-    LOCAL src:DWORD
+    LOCAL bits:DWORD
+    LOCAL bmp:DWORD
+    LOCAL gfx:DWORD
+    LOCAL stride:DWORD
 
     INVOKE BeginPaint, hwnd, ADDR ps
     mov  esi, eax
@@ -438,23 +442,54 @@ editor_do_paint PROC USES ebx esi hwnd:DWORD
     mov  rc.bottom, ED_TOOLBAR_H
     INVOKE FillRect, esi, ADDR rc, COLOR_BTNFACE_1
 
+    ; Everything below the toolbar is the Snip's backdrop. A free-form Snip is
+    ; not opaque, so the transparent region must reveal a defined colour rather
+    ; than stale pixels.
+    INVOKE GetClientRect, hwnd, ADDR rc
+    mov  rc.top, ED_TOOLBAR_H
+    INVOKE FillRect, esi, ADDR rc, COLOR_WINDOW_1
+
     INVOKE dib_snip
     mov  ebx, eax
-    mov  eax, [ebx].Snip.hdc
-    mov  src, eax
+    mov  eax, [ebx].Snip.bits
+    mov  bits, eax
     mov  eax, [ebx].Snip.w
     mov  srcW, eax
     mov  eax, [ebx].Snip.h
     mov  srcH, eax
 
-    cmp  src, 0
+    cmp  bits, 0
     jz   ep_done
     cmp  srcW, 1
     jl   ep_done
     cmp  srcH, 1
     jl   ep_done
 
-    INVOKE BitBlt, esi, 0, ED_TOOLBAR_H, srcW, srcH, src, 0, 0, SRCCOPY
+    ; Draw the Snip through GDI+, whose image path honours the alpha channel.
+    ; BitBlt would paint a free-form cut as a full rectangle.
+    mov  bmp, 0
+    mov  gfx, 0
+    mov  eax, srcW
+    shl  eax, 2
+    mov  stride, eax
+    INVOKE GdipCreateBitmapFromScan0, srcW, srcH, stride, PixelFormat32bppARGB, bits, ADDR bmp
+    test eax, eax
+    jnz  ep_preview
+    INVOKE GdipCreateFromHDC, esi, ADDR gfx
+    test eax, eax
+    jnz  ep_dispose
+    INVOKE GdipDrawImageI, gfx, bmp, 0, ED_TOOLBAR_H
+
+ep_dispose:
+    cmp  gfx, 0
+    jz   ep_bmp
+    INVOKE GdipDeleteGraphics, gfx
+ep_bmp:
+    cmp  bmp, 0
+    jz   ep_preview
+    INVOKE GdipDisposeImage, bmp
+
+ep_preview:
     ; The in-progress stroke goes straight onto the paint DC, not Working, so a
     ; translucent Highlighter is not double-blended across its own drag frames.
     INVOKE ink_preview, esi, ED_TOOLBAR_H

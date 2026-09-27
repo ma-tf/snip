@@ -11,8 +11,10 @@ The state machine behind the Overlay's behaviour. It owns the session lifecycle
 that produces a rectangular Selection. It is the only module that knows a
 session is in flight.
 
-Ticket 02 is rectangular only. Free-form, window, and full-screen add their own
-mouse-down paths here when tickets 07, 08, and 09 land.
+Ticket 02 landed the rectangular Selection; ticket 07 adds free-form, which
+traces a path instead of a box and hands the Overlay a different kind of frame.
+Window and full-screen add their own mouse-down paths here when tickets 08 and
+09 land.
 
 ## Where it lives
 
@@ -42,7 +44,15 @@ is Win32-free on purpose — the trickiest part of the module reads on its own.
 
 **One pixel is a Selection; zero is not.** `sel_lup` measures the rectangle and
 ignores anything with a width or height of zero or less, so a click that never
-drags leaves the Overlay up instead of producing an empty snip.
+drags leaves the Overlay up instead of producing an empty snip. Free-form is the
+same bargain with different geometry: the Trace is simplified, and a path that is
+too short or too small (`mask_degenerate`) leaves the Overlay up.
+
+**Free-form is a second gesture.** The mode comes from `App.mode`, and each mode
+gets its own branch rather than falling through to the rectangle handler.
+`sel_ldown` starts the Trace, `sel_mmove` accepts points and repaints the preview,
+and `sel_lup` simplifies and crops. `sel_repaint` dispatches: a rectangle goes to
+`overlay_repaint`, a Trace to `overlay_repaint_free`.
 
 **Cancellation restores, it does not remember.** `select_cancel` clears the drag
 and restores the Shell, and deliberately does *not* record the Selection, so
@@ -94,6 +104,7 @@ land the Editor's own pixels in the Snip. Between the hide and the restore,
 ## See also
 
 - [`docs/overlay.md`](overlay.md) — the surface this drives.
+- [`docs/freeform.md`](freeform.md) — the Trace gesture and the coverage Mask.
 - [`docs/multimonitor.md`](multimonitor.md) — coordinate spaces and the topology/DPI rules.
 - [`docs/capture.md`](capture.md) — what `select_finish` hands the Selection to.
 - [`CONTEXT.md`](../CONTEXT.md) — *Selection*, *Snipping session*, *Overlay*.
