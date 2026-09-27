@@ -37,8 +37,8 @@ Two variants, both writing `build\snip.exe`, so the run path never changes:
 
 | Variant         | Linked by      | Output                     | Size      |
 | --------------- | -------------- | -------------------------- | --------- |
-| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 15,360 B  |
-| `size`          | Crinkler 3.0b  | `snip.exe`                 | 4,644 B   |
+| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 18,432 B  |
+| `size`          | Crinkler 3.0b  | `snip.exe`                 | 5,739 B   |
 
 The `size` variant is not "the debug build with the PDB removed" — it is a different linker.
 Crinkler resolves DLL imports by hash (four bytes each, instead of a full import table) and
@@ -56,12 +56,12 @@ rem debug
 link /nologo /machine:x86 /subsystem:windows /entry:WinMainASM /nodefaultlib ^
      /incremental:no /opt:ref /opt:icf /release /debug ^
      /out:build\snip.exe @build\objs.rsp ^
-     kernel32.lib user32.lib gdi32.lib comctl32.lib comdlg32.lib
+     kernel32.lib user32.lib gdi32.lib gdiplus.lib comctl32.lib comdlg32.lib
 
 rem size
 tools\crinkler.exe /OUT:build\snip.exe /SUBSYSTEM:WINDOWS /ENTRY:WinMainASM /NODEFAULTLIB ^
      /COMPMODE:SLOW /TRANSFORM:CALLS /ORDERTRIES:2000 @build\objs.rsp ^
-     kernel32.lib user32.lib gdi32.lib comctl32.lib comdlg32.lib
+     kernel32.lib user32.lib gdi32.lib gdiplus.lib comctl32.lib comdlg32.lib
 ```
 
 Ten things to know about those lines:
@@ -83,6 +83,11 @@ Ten things to know about those lines:
   `ComboBox`, so the module links `comctl32` and registers the class at process init with
   `InitCommonControlsEx(ICC_USEREX_CLASSES)`. The 16×16 row glyphs are drawn at runtime with
   GDI into one masked image list — no icon resources, no `.rsrc`. See [`docs/shell.md`](shell.md).
+- **`gdiplus.lib` is for antialiased ink.** GDI cannot antialias, so the Pen and Highlighter
+  strokes are drawn with GDI+. `gdiplus.dll` is a real file on disk (not an API-set forwarder),
+  so it links statically in both variants and needs no `combase`-style runtime resolution.
+  `ink_init` starts GDI+ once from `snip.asm`; a failure leaves the annotation buttons inert.
+  See [`docs/ink.md`](ink.md).
 - **No `ole32`, and `combase` at runtime.** `ole32.lib`'s COM entry points
   (`CoInitializeEx`, `CoCreateInstance`, `CreateStreamOnHGlobal`, `GetHGlobalFromStream`) are
   exported only as *forwarders* to `api-ms-win-core-com-l1-1-0`, an API-set name with no file
@@ -120,7 +125,10 @@ with a Pristine twin — and opens the Editor window sized to it, reused for eve
 Snip (ticket 03). The Editor carries a toolbar whose New, Copy, and Save are live (ticket
 05): Copy puts the Snip on the clipboard as `CF_DIBV5`, a registered `PNG`, and `CF_DIB`,
 and Save writes a PNG through the standard dialog — both encoded by WIC straight from the
-DIB. Sizes: `debug` **15,360 B** plus `snip.pdb`; `size` (Crinkler) **4,644 B**.
+DIB. Pen, Highlighter, Eraser, and Undo are live too (ticket 06): strokes are held as a
+command log and replayed onto the Working bitmap with GDI+, the Eraser removes whole strokes,
+and Undo reverses the last operation. Sizes: `debug` **18,432 B** plus `snip.pdb`; `size`
+(Crinkler) **5,739 B**.
 
 ## Debugging
 
@@ -166,7 +174,7 @@ and no `PROC FRAME`/`.pushreg`/`.allocstack` boilerplate. Structured exceptions 
   it to rebase under ASLR. That is normal for this target and no longer something to chase.
 - `ml` prints `Assembling: <path>` to stdout even with `/nologo`.
 - **Antivirus is an active hazard.** Windows Defender removed the Crinkler `TINYHEADER` output
-  within a second of it being written. The current `size` output (2,696 B, no TINYHEADER)
+  within a second of it being written. The current `size` output (5,739 B, no TINYHEADER)
   survived and ran, but Crinkler output is a documented false-positive magnet. If a build
   silently produces no `snip.exe`, check Defender's protection history before debugging the
   build.

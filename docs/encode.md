@@ -9,8 +9,8 @@ The Editor's Copy, Save, and New buttons, and the encoder behind Copy and Save.
 **Copy** publishes the live Snip to the clipboard; **Save** opens the standard
 Save As dialog and writes a PNG; **New** starts another Snipping session without
 closing the Editor. Both Copy and Save read the **Working** bitmap in place, so
-what they publish is what the Editor shows (annotations included, once ticket 06
-lands). The Editor stays open after either.
+what they publish is what the Editor shows — annotations included (ticket 06). The
+Editor stays open after either.
 
 Encoding is **WIC**, not GDI+: it writes the Snip's straight-BGRA pixels straight
 into a PNG encoder with no `HBITMAP` round-trip, returns an exact `HRESULT` per
@@ -73,8 +73,9 @@ clipboard on a successful `SetClipboardData`.
 `GetSaveFileNameW`; on OK it hands the path to `encode_file`.
 
 **The toolbar is stock buttons.** Seven `BUTTON` controls in a row, same as the
-Shell's New. New/Save/Copy are wired; Pen, Highlighter, Eraser, and Undo are
-present but inert until ticket 06. The Editor's client area is the toolbar
+Shell's New. All seven are live: New/Save/Copy are wired here; Pen, Highlighter,
+Eraser, and Undo call into `ink.asm` (ticket 06, see [`docs/ink.md`](ink.md)). The
+Editor's client area is the toolbar
 (`ED_TOOLBAR_H`, 32 px) plus the image; `editor_fit` widens the window to
 `ED_TOOLBAR_MINW` when the Snip is narrower than the button row, and
 `editor_do_paint` fills the strip and blits the Snip below it.

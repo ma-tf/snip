@@ -147,4 +147,26 @@ encode_init      PROTO STDCALL                    ; BOOL encode_init(void)
 encode_file      PROTO STDCALL :DWORD, :DWORD     ; HRESULT encode_file(Snip *snip, LPCWSTR path)
 encode_clipboard PROTO STDCALL :DWORD             ; HRESULT encode_clipboard(Snip *snip)
 
+; ink.asm - the annotation engine: a command log of strokes replayed onto the
+; Working bitmap with GDI+, the Eraser, and Undo (ticket 06). It reads the live
+; Snip through dib_snip and is fed input by editor.asm. Coordinates are the
+; Snip's own pixels (Editor client less the toolbar), so a stroke replays
+; identically. A stroke is uncommitted until ink_end, which is when it lands in
+; Working; ink_preview draws the in-progress stroke over a paint for feedback.
+ink_init        PROTO STDCALL                          ; BOOL ink_init(void) - GDI+ startup, once
+ink_reset       PROTO STDCALL                          ; void - drop the log for a new Snip
+ink_start       PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :DWORD  ; BOOL ink_start(tool, x, y, dpi)
+ink_extend      PROTO STDCALL :SDWORD, :SDWORD         ; void ink_extend(x, y)
+ink_end         PROTO STDCALL                          ; void - commit the stroke
+ink_preview     PROTO STDCALL :DWORD, :SDWORD          ; void ink_preview(hdc, dy)
+ink_erase_begin PROTO STDCALL                          ; void - start an eraser drag
+ink_erase       PROTO STDCALL :SDWORD, :SDWORD, :DWORD ; BOOL ink_erase(x, y, dpi)
+ink_erase_end   PROTO STDCALL                          ; void - end an eraser drag
+ink_undo        PROTO STDCALL                          ; BOOL - revert the last operation
+
+; The annotation tools, as the Editor's active-tool value.
+INK_PEN         EQU 0
+INK_HILITE      EQU 1
+INK_ERASER      EQU 2
+
 ENDIF

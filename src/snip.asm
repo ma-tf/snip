@@ -56,6 +56,10 @@ WinMainASM PROC
     ; into a message and a clean exit; for now Copy/Save simply fail.
     INVOKE encode_init
 
+    ; GDI+, for the Editor's antialiased Pen and Highlighter (ticket 06). A
+    ; failure just leaves the annotation buttons inert, like WIC above.
+    INVOKE ink_init
+
     ; hinst = GetModuleHandleW(NULL)
     INVOKE GetModuleHandleW, 0
     mov  app.hInstance, eax

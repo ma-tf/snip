@@ -86,7 +86,7 @@ rem --- link / compress -------------------------------------------------------
 rem LIBS has no ole32: its COM functions are forwards to an API-set DLL with no
 rem file on disk, which Crinkler cannot read. encode.asm resolves them from
 rem combase.dll at runtime instead. See encode.asm and docs/build.md.
-set "LIBS=kernel32.lib user32.lib gdi32.lib comctl32.lib comdlg32.lib"
+set "LIBS=kernel32.lib user32.lib gdi32.lib gdiplus.lib comctl32.lib comdlg32.lib"
 
 if /I "%MODE%"=="size" goto :size
 

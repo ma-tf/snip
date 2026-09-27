@@ -115,6 +115,24 @@ ImageList_AddMasked  PROTO STDCALL :DWORD, :DWORD, :DWORD
 ImageList_Destroy    PROTO STDCALL :DWORD
 
 ; ---------------------------------------------------------------------------
+; gdiplus - antialiased ink for the annotation tools (ticket 06). gdiplus.dll
+; is a real file on disk, not an API-set forwarder, so it links statically for
+; both the linked and the Crinkler build. REAL width arguments are passed as
+; their float bits in a DWORD (see ink.asm). See docs/ink.md.
+; ---------------------------------------------------------------------------
+GdiplusStartup       PROTO STDCALL :DWORD, :DWORD, :DWORD
+GdiplusShutdown      PROTO STDCALL :DWORD
+GdipCreateFromHDC    PROTO STDCALL :DWORD, :DWORD
+GdipDeleteGraphics   PROTO STDCALL :DWORD
+GdipSetSmoothingMode PROTO STDCALL :DWORD, :DWORD
+GdipCreatePen1       PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; (ARGB, REAL width, unit, GpPen**)
+GdipDeletePen        PROTO STDCALL :DWORD
+GdipDrawLinesI       PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD  ; (gfx, pen, GpPoint*, count)
+GdipSetPenStartCap   PROTO STDCALL :DWORD, :DWORD
+GdipSetPenEndCap     PROTO STDCALL :DWORD, :DWORD
+GdipSetPenLineJoin   PROTO STDCALL :DWORD, :DWORD
+
+; ---------------------------------------------------------------------------
 ; Window styles and messages (numeric values from the SDK headers)
 ; ---------------------------------------------------------------------------
 WS_CAPTION          EQU 00C00000h
@@ -157,10 +175,12 @@ WM_LBUTTONUP        EQU 0202h
 WM_RBUTTONUP        EQU 0205h
 WM_COMMAND          EQU 0111h
 WM_SETFONT          EQU 0030h
+WM_CAPTURECHANGED   EQU 0215h          ; mouse capture moved; end a drag cleanly
 WM_DPICHANGED       EQU 02E0h          ; the window's effective DPI changed
 
 BN_CLICKED          EQU 0
 CBN_SELCHANGE       EQU 1
+BM_SETSTATE         EQU 00F3h          ; show a push button in the pressed state
 
 CB_GETCURSEL        EQU 0147h
 CB_SETCURSEL        EQU 014Eh
@@ -245,6 +265,12 @@ MAX_PATH                 EQU 260
 OFN_OVERWRITEPROMPT      EQU 2
 OFN_PATHMUSTEXIST        EQU 800h
 OFN_EXPLORER             EQU 80000h
+
+; --- ticket 06: GDI+ annotation constants ----------------------------------
+SmoothingModeAntiAlias   EQU 4            ; GDI+ antialiased rasterisation
+UnitPixel                EQU 2            ; a pen width is in device pixels
+LineCapRound             EQU 2            ; round caps, so a stroke has soft ends
+LineJoinRound            EQU 2            ; round joins, so joints don't spike
 
 ; ---------------------------------------------------------------------------
 ; Structures (exact x86 layouts from the SDK headers)
@@ -433,5 +459,14 @@ OPENFILENAMEW STRUCT
     dwReserved        DWORD ?
     FlagsEx           DWORD ?
 OPENFILENAMEW ENDS                     ; sizeof == 88
+
+; GdiplusStartupInput (gdiplusinit.h) on x86: 4 DWORDs. GdiplusVersion must be
+; 1; the other three are left zero.
+GdiplusStartupInput STRUCT
+    GdiplusVersion           DWORD ?
+    DebugEventCallback       DWORD ?
+    SuppressBackgroundThread DWORD ?
+    SuppressExternalCodecs   DWORD ?
+GdiplusStartupInput ENDS               ; sizeof == 16
 
 ENDIF
