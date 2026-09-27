@@ -83,6 +83,15 @@ IDC_NEW             EQU 1001
 IDC_MODE            EQU 1002
 IDC_DELAY           EQU 1003
 
+; The Editor toolbar (ticket 05; the annotation buttons go live in ticket 06).
+IDC_ED_NEW          EQU 1101
+IDC_ED_SAVE         EQU 1102
+IDC_ED_COPY         EQU 1103
+IDC_ED_PEN          EQU 1104
+IDC_ED_HILITE       EQU 1105
+IDC_ED_ERASER       EQU 1106
+IDC_ED_UNDO         EQU 1107
+
 ; The mode drop-down's indices, in list order.
 MODE_RECT           EQU 0
 MODE_WINDOW         EQU 1
@@ -130,5 +139,12 @@ dib_snip PROTO STDCALL          ; Snip *dib_snip(void)
 
 ; editor.asm - the Editor window. Created once, resized and reused per Snip.
 editor_open PROTO STDCALL :DWORD  ; BOOL editor_open(App *app)
+
+; encode.asm - WIC encoding to a file and the clipboard. Ticket 05. The COM
+; apartment and the WIC factory are process-wide; encode_init is called once
+; from snip.asm. encode_file/encode_clipboard return an HRESULT (0 == S_OK).
+encode_init      PROTO STDCALL                    ; BOOL encode_init(void)
+encode_file      PROTO STDCALL :DWORD, :DWORD     ; HRESULT encode_file(Snip *snip, LPCWSTR path)
+encode_clipboard PROTO STDCALL :DWORD             ; HRESULT encode_clipboard(Snip *snip)
 
 ENDIF

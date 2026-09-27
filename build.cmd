@@ -82,9 +82,12 @@ for %%f in ("%SRC%\*.asm") do (
     echo "%OUT%\%%~nf.obj">>"%OUT%\objs.rsp"
 )
 
-set "LIBS=kernel32.lib user32.lib gdi32.lib comctl32.lib"
-
 rem --- link / compress -------------------------------------------------------
+rem LIBS has no ole32: its COM functions are forwards to an API-set DLL with no
+rem file on disk, which Crinkler cannot read. encode.asm resolves them from
+rem combase.dll at runtime instead. See encode.asm and docs/build.md.
+set "LIBS=kernel32.lib user32.lib gdi32.lib comctl32.lib comdlg32.lib"
+
 if /I "%MODE%"=="size" goto :size
 
 rem debug: the ordinary linked build, with a PDB beside the exe.
@@ -112,7 +115,8 @@ rem /ORDERTRIES reorders the parts to help the model: both cost nothing at
 rem runtime and take the file from 2,858 to 2,696 bytes. ORDERTRIES is kept
 rem modest (2,000, ~7s); 50,000 buys only 8 more bytes for a 69s build.
 "%CRINKLER%" /OUT:"%OUT%\snip.exe" /SUBSYSTEM:WINDOWS /ENTRY:WinMainASM /NODEFAULTLIB ^
-    /COMPMODE:SLOW /TRANSFORM:CALLS /ORDERTRIES:2000 @"%OUT%\objs.rsp" %LIBS%
+    /COMPMODE:SLOW /TRANSFORM:CALLS /ORDERTRIES:2000 ^
+    @"%OUT%\objs.rsp" %LIBS%
 if errorlevel 1 (
     echo error: Crinkler failed
     exit /b 1

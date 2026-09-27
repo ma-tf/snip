@@ -37,8 +37,8 @@ Two variants, both writing `build\snip.exe`, so the run path never changes:
 
 | Variant         | Linked by      | Output                     | Size      |
 | --------------- | -------------- | -------------------------- | --------- |
-| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 9,216 B   |
-| `size`          | Crinkler 3.0b  | `snip.exe`                 | 2,696 B   |
+| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 15,360 B  |
+| `size`          | Crinkler 3.0b  | `snip.exe`                 | 4,644 B   |
 
 The `size` variant is not "the debug build with the PDB removed" — it is a different linker.
 Crinkler resolves DLL imports by hash (four bytes each, instead of a full import table) and
@@ -56,15 +56,15 @@ rem debug
 link /nologo /machine:x86 /subsystem:windows /entry:WinMainASM /nodefaultlib ^
      /incremental:no /opt:ref /opt:icf /release /debug ^
      /out:build\snip.exe @build\objs.rsp ^
-     kernel32.lib user32.lib gdi32.lib comctl32.lib
+     kernel32.lib user32.lib gdi32.lib comctl32.lib comdlg32.lib
 
 rem size
 tools\crinkler.exe /OUT:build\snip.exe /SUBSYSTEM:WINDOWS /ENTRY:WinMainASM /NODEFAULTLIB ^
      /COMPMODE:SLOW /TRANSFORM:CALLS /ORDERTRIES:2000 @build\objs.rsp ^
-     kernel32.lib user32.lib gdi32.lib comctl32.lib
+     kernel32.lib user32.lib gdi32.lib comctl32.lib comdlg32.lib
 ```
 
-Nine things to know about those lines:
+Ten things to know about those lines:
 
 - **No CRT.** `/subsystem:windows` defaults the entry symbol to `WinMainCRTStartup`; with no
   C runtime linked, that symbol does not exist. We `PUBLIC` our own entry and name it with
@@ -83,6 +83,14 @@ Nine things to know about those lines:
   `ComboBox`, so the module links `comctl32` and registers the class at process init with
   `InitCommonControlsEx(ICC_USEREX_CLASSES)`. The 16×16 row glyphs are drawn at runtime with
   GDI into one masked image list — no icon resources, no `.rsrc`. See [`docs/shell.md`](shell.md).
+- **No `ole32`, and `combase` at runtime.** `ole32.lib`'s COM entry points
+  (`CoInitializeEx`, `CoCreateInstance`, `CreateStreamOnHGlobal`, `GetHGlobalFromStream`) are
+  exported only as *forwarders* to `api-ms-win-core-com-l1-1-0`, an API-set name with no file
+  on disk. `link` follows the forward, but Crinkler reads the exporting DLL to hash its
+  exports and dies with `Cannot find DLL API-MS-WIN-CORE-COM-L1-1-0.DLL`. So `encode.asm`
+  loads `combase.dll` — the real implementation, which exports all four directly — and
+  resolves them with `GetProcAddress` at startup. `comdlg32.lib` is the ordinary Save As
+  dialog. See [`docs/encode.md`](encode.md).
 - **The debug link strips and tidies.** `/incremental:no` drops the incremental link table and
   its `0xCC` padding; `/opt:ref` and `/opt/icf` drop unreferenced and duplicate code;
   `/release` sets the PE checksum. Without them `link` defaults to incremental, which pads
@@ -109,8 +117,10 @@ Pressing New starts a Snipping session: the Shell hides, the Overlay covers the 
 screen, and a rectangular Selection can be dragged (ticket 02). Completing the Selection
 blits its region straight off the screen into a Snip — an owned 32bpp straight-BGRA DIB
 with a Pristine twin — and opens the Editor window sized to it, reused for every later
-Snip (ticket 03). Sizes: `debug` **11,776 B** plus `snip.pdb`; `size` (Crinkler)
-**3,357 B**.
+Snip (ticket 03). The Editor carries a toolbar whose New, Copy, and Save are live (ticket
+05): Copy puts the Snip on the clipboard as `CF_DIBV5`, a registered `PNG`, and `CF_DIB`,
+and Save writes a PNG through the standard dialog — both encoded by WIC straight from the
+DIB. Sizes: `debug` **15,360 B** plus `snip.pdb`; `size` (Crinkler) **4,644 B**.
 
 ## Debugging
 

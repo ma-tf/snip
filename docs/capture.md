@@ -11,8 +11,9 @@ blitted off the screen, it is wrapped as a **Snip** — an owned bitmap with a
 Pristine twin — and the Editor is sized to it and painted.
 
 The Snip is the unit the rest of the app is about. The Editor annotates it
-(ticket 06), Copy and Save As publish it (ticket 05), and free-form mode will cut
-its alpha (ticket 07). None of them re-capture; they all read the Snip.
+(ticket 06), Copy and Save As publish it ([`docs/encode.md`](encode.md)), and
+free-form mode will cut its alpha (ticket 07). None of them re-capture; they all
+read the Snip.
 
 ## Where it lives
 

@@ -22,6 +22,20 @@ WIN32_INC EQU 1
 GetModuleHandleW PROTO STDCALL :DWORD
 ExitProcess      PROTO STDCALL :DWORD
 MulDiv           PROTO STDCALL :SDWORD, :SDWORD, :SDWORD   ; rounded scale, for DPI chrome
+LoadLibraryA     PROTO STDCALL :DWORD                      ; resolve the COM entry points
+GetProcAddress   PROTO STDCALL :DWORD, :DWORD
+GlobalAlloc      PROTO STDCALL :DWORD, :DWORD              ; clipboard HGLOBALs
+GlobalLock       PROTO STDCALL :DWORD
+GlobalUnlock     PROTO STDCALL :DWORD
+GlobalFree       PROTO STDCALL :DWORD
+
+; ---------------------------------------------------------------------------
+; ole32 is not bound statically. Its COM entry points are forwards to
+; api-ms-win-core-com-l1-1-0, an API-set name with no file on disk; the ordinary
+; linker follows the forward, but Crinkler reads the exporting DLL's file and
+; cannot. encode.asm resolves the five functions from combase.dll (the real
+; implementation) with GetProcAddress at startup. See docs/build.md.
+; ---------------------------------------------------------------------------
 
 ; ---------------------------------------------------------------------------
 ; user32
@@ -58,6 +72,17 @@ AdjustWindowRect              PROTO STDCALL :DWORD, :DWORD, :DWORD
 MonitorFromRect               PROTO STDCALL :DWORD, :DWORD
 GetMonitorInfoW               PROTO STDCALL :DWORD, :DWORD
 GetDpiForWindow               PROTO STDCALL :DWORD   ; the Overlay's effective DPI
+OpenClipboard                 PROTO STDCALL :DWORD
+EmptyClipboard                PROTO STDCALL
+SetClipboardData              PROTO STDCALL :DWORD, :DWORD
+CloseClipboard                PROTO STDCALL
+RegisterClipboardFormatW      PROTO STDCALL :DWORD
+
+; ---------------------------------------------------------------------------
+; comdlg32 - the standard Save As dialog (ticket 05).
+; ---------------------------------------------------------------------------
+GetSaveFileNameW     PROTO STDCALL :DWORD
+CommDlgExtendedError PROTO STDCALL
 
 ; ---------------------------------------------------------------------------
 ; gdi32
@@ -203,6 +228,24 @@ CLEARTYPE_QUALITY   EQU 5
 
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 EQU -4
 
+; --- ticket 05: COM/WIC encoding, the clipboard, and the Save As dialog -----
+COINIT_APARTMENTTHREADED EQU 2
+CLSCTX_INPROC_SERVER     EQU 1
+RPC_E_CHANGED_MODE       EQU 80010106h   ; COM already up on this thread, in another mode
+GENERIC_WRITE            EQU 40000000h
+WICBitmapEncoderNoCache  EQU 2
+GMEM_MOVEABLE            EQU 2
+STATFLAG_NONAME          EQU 0
+CF_DIB                   EQU 8
+CF_DIBV5                 EQU 17
+BI_BITFIELDS             EQU 3
+LCS_sRGB                 EQU 73524742h    ; 'sRGB', a linear/sRGB colour space tag
+COLOR_BTNFACE_1          EQU 16            ; (COLOR_BTNFACE + 1), a pseudo-HBRUSH for FillRect
+MAX_PATH                 EQU 260
+OFN_OVERWRITEPROMPT      EQU 2
+OFN_PATHMUSTEXIST        EQU 800h
+OFN_EXPLORER             EQU 80000h
+
 ; ---------------------------------------------------------------------------
 ; Structures (exact x86 layouts from the SDK headers)
 ; ---------------------------------------------------------------------------
@@ -304,5 +347,91 @@ MONITORINFO STRUCT
     rcWork      RECT <>
     dwFlags     DWORD ?
 MONITORINFO ENDS                       ; sizeof == 40
+
+; --- ticket 05: COM/WIC, clipboard, and Save As layouts --------------------
+; GUID (guiddef.h): DWORD, WORD, WORD, BYTE[8]. MASM's default structure packing
+; is 1, and every field is naturally aligned here, so sizeof == 16.
+GUID STRUCT
+    Data1   DWORD ?
+    Data2   WORD ?
+    Data3   WORD ?
+    Data4   BYTE 8 DUP(?)
+GUID ENDS                              ; sizeof == 16
+
+; STATSTG (objidl.h) on x86: 10 DWORDs, then the CLSID, then 2 DWORDs == 72.
+; cbSize is a ULARGE_INTEGER; only its low half is read (a PNG is < 4 GB).
+STATSTG STRUCT
+    pwcsName          DWORD ?
+    dwType            DWORD ?
+    cbSizeLow         DWORD ?
+    cbSizeHigh        DWORD ?
+    mtimeLow          DWORD ?
+    mtimeHigh         DWORD ?
+    ctimeLow          DWORD ?
+    ctimeHigh         DWORD ?
+    atimeLow          DWORD ?
+    atimeHigh         DWORD ?
+    grfMode           DWORD ?
+    grfLocksSupported DWORD ?
+    clsid             GUID <>
+    grfStateBits      DWORD ?
+    reserved          DWORD ?
+STATSTG ENDS                           ; sizeof == 72
+
+; BITMAPV5HEADER (wingdi.h): 124 bytes. bV5Endpoints is a CIEXYZTRIPLE (3 x 3
+; FIXED == 36 bytes); it is kept as raw bytes because it is always left zero.
+BITMAPV5HEADER STRUCT
+    bV5Size          DWORD ?
+    bV5Width         SDWORD ?
+    bV5Height        SDWORD ?
+    bV5Planes        WORD ?
+    bV5BitCount      WORD ?
+    bV5Compression   DWORD ?
+    bV5SizeImage     DWORD ?
+    bV5XPelsPerMeter SDWORD ?
+    bV5YPelsPerMeter SDWORD ?
+    bV5ClrUsed       DWORD ?
+    bV5ClrImportant  DWORD ?
+    bV5RedMask       DWORD ?
+    bV5GreenMask     DWORD ?
+    bV5BlueMask      DWORD ?
+    bV5AlphaMask     DWORD ?
+    bV5CSType        DWORD ?
+    bV5Endpoints     BYTE 36 DUP(?)
+    bV5GammaRed      DWORD ?
+    bV5GammaGreen    DWORD ?
+    bV5GammaBlue     DWORD ?
+    bV5Intent        DWORD ?
+    bV5ProfileData   DWORD ?
+    bV5ProfileSize   DWORD ?
+    bV5Reserved      DWORD ?
+BITMAPV5HEADER ENDS                    ; sizeof == 124
+
+; OPENFILENAMEW (commdlg.h) on x86: 14 DWORDs, 2 WORDs, 7 DWORDs == 88.
+OPENFILENAMEW STRUCT
+    lStructSize       DWORD ?
+    hwndOwner         DWORD ?
+    hInstance         DWORD ?
+    lpstrFilter       DWORD ?
+    lpstrCustomFilter DWORD ?
+    nMaxCustFilter    DWORD ?
+    nFilterIndex      DWORD ?
+    lpstrFile         DWORD ?
+    nMaxFile          DWORD ?
+    lpstrFileTitle    DWORD ?
+    nMaxFileTitle     DWORD ?
+    lpstrInitialDir   DWORD ?
+    lpstrTitle        DWORD ?
+    Flags             DWORD ?
+    nFileOffset       WORD ?
+    nFileExtension    WORD ?
+    lpstrDefExt       DWORD ?
+    lCustData         DWORD ?
+    lpfnHook          DWORD ?
+    lpTemplateName    DWORD ?
+    pvReserved        DWORD ?
+    dwReserved        DWORD ?
+    FlagsEx           DWORD ?
+OPENFILENAMEW ENDS                     ; sizeof == 88
 
 ENDIF

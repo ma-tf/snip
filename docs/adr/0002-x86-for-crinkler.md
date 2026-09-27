@@ -19,9 +19,10 @@ The x86 port was measured as a throwaway spike before this decision: both module
 
 The whole app is x86, not just the size build. The debug build is x86 too, but stays fully debuggable: `link /debug` still emits a PDB and WinDbg still loads it. The x64 conventions die with the target — there is no `PROC FRAME`/`.pushreg`/`.allocstack` unwind boilerplate and no `.pdata`; SEH is the `fs:[0]` chain. Argument passing moves to `INVOKE` over typed `PROTO`s, which removed the hand-laid twelve-argument `CreateWindowExW` block and made the source shorter, not longer.
 
-Two costs are accepted and recorded:
+Three costs are accepted and recorded:
 
 - **Crinkler's size output can never be debugged.** No PDB, no symbols; it is a shipping artifact, never the working build.
 - **The size build has a ceiling and an antivirus hazard.** Crinkler 3.0 limits uncompressed size to 64 KB per part, and MASM funnels all `.code` into one section, so the finished tool's code must fit under 64 KB or `build.cmd size` will stop linking. Separately, Defender quarantined the `TINYHEADER` variant of the output within a second of the build writing it; TINYHEADER is therefore not used, but the normal output remains subject to heuristic detection. The linked `debug` build is the fallback if either bites.
+- **Crinkler cannot resolve forwarded API-set imports.** Windows 11 exports many functions from the real DLL (`combase.dll`, `kernelbase.dll`) and re-exports them from the classic one (`ole32.dll`, `kernel32.dll`) as forwards to `api-ms-win-*` API-set names. Those names have no file on disk, and Crinkler reads the exporting DLL's file to hash its exports; it follows the forward into the void and fails. `kernelbase`/`ntdll` forwards mostly resolve because those files exist, but the `api-ms-win-core-com-l1-1-0` set does not, so `ole32.lib` cannot be linked. `encode.asm` therefore resolves the four COM entry points it needs from `combase.dll` with `GetProcAddress` at startup; `ole32.lib` is not in the build. `/REPLACEDLL` and `/FALLBACKDLL` were tried and do not help. See [`docs/encode.md`](../encode.md).
 
 If Crinkler ever ships x64 support, or the app outgrows the part limit, this ADR can be superseded by reverting to the x64 sources (the pre-port tree is recorded in the ticket history) and taking the DOS-stub route instead.

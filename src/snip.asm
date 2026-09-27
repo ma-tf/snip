@@ -51,6 +51,11 @@ WinMainASM PROC
     ; the Shell just comes up without icons.
     INVOKE InitCommonControlsEx, OFFSET icce
 
+    ; COM + the WIC factory, for Copy and Save As (ticket 05). One apartment and
+    ; one factory for the life of the process. Ticket 11 turns a failure here
+    ; into a message and a clean exit; for now Copy/Save simply fail.
+    INVOKE encode_init
+
     ; hinst = GetModuleHandleW(NULL)
     INVOKE GetModuleHandleW, 0
     mov  app.hInstance, eax

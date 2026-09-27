@@ -1,21 +1,24 @@
 ; editor.asm
 ; The Editor window: where the Snip lands and (tickets 05/06) is annotated.
 ;
-; Ticket 03 is the window and the paint path, nothing else: one window created
-; once and reused for every Snip - no window churn - sized to the Snip and
-; showing it. The toolbar, Copy/Save As, and the annotation tools land in 05 and
-; 06; zoom in ticket 17.
+; Ticket 03 is the window and the paint path; ticket 05 adds the toolbar and
+; wires New, Save, and Copy. The Pen/Highlighter/Eraser/Undo buttons land here
+; too but stay inert until ticket 06; zoom is ticket 17.
 ;
 ; The window is normal, not topmost, and no menu bar (spec). While a Snipping
 ; session is live it is hidden by select.asm, exactly like the Shell: the
 ; topmost Overlay covers it anyway, but it is not excluded from capture, so a
 ; Selection over it would otherwise capture its pixels.
 ;
-; It paints from the Snip's own memory DC with a single BitBlt. The Snip is
-; straight BGRA; for a rectangular Snip every pixel is opaque, so a colour blit
-; is exact. (Free-form cuts, ticket 07, will need alpha-aware painting here.)
+; It paints from the Snip's own memory DC with a single BitBlt, offset below the
+; toolbar. The Snip is straight BGRA; for a rectangular Snip every pixel is
+; opaque, so a colour blit is exact. (Free-form cuts, ticket 07, will need
+; alpha-aware painting here.)
 ;
-; See docs/capture.md.
+; Copy and Save As hand the live Snip to encode.asm; nothing is re-captured.
+; A failure is silently ignored here - ticket 11 owns the error surface.
+;
+; See docs/capture.md and docs/encode.md.
 
 .386
 .model flat, stdcall
@@ -28,11 +31,18 @@ PUBLIC editor_open
 
 ; Forward declarations so INVOKE and OFFSET reach the rest of the file.
 editor_create   PROTO STDCALL :DWORD                       ; HWND editor_create(App *app)
+editor_on_create PROTO STDCALL :DWORD, :DWORD              ; void editor_on_create(DWORD hwnd, App *app)
 editor_fit      PROTO STDCALL :DWORD, :DWORD               ; void editor_fit(App *app, DWORD hwnd)
 editor_do_paint PROTO STDCALL :DWORD                       ; void editor_do_paint(DWORD hwnd)
+editor_save     PROTO STDCALL :DWORD                       ; void editor_save(App *app)
+editor_copy     PROTO STDCALL :DWORD                       ; void editor_copy(App *app)
 editor_wndproc  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 
 ED_STYLE EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX
+
+; The toolbar strip and the minimum client width that fits all seven buttons.
+ED_TOOLBAR_H    EQU 32
+ED_TOOLBAR_MINW EQU 456
 
 ; ---------------------------------------------------------------------------
 ; Statics. The Editor is a singleton, so its class lives here.
@@ -40,9 +50,30 @@ ED_STYLE EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX
 .const
 ed_class DW 'S','n','i','p','E','d','i','t','o','r',0
 ed_title DW 'S','n','i','p','p','i','n','g',' ','T','o','o','l',0
+ed_cls_button DW 'B','u','t','t','o','n',0
+
+btn_new        DW 'N','e','w',0
+btn_save       DW 'S','a','v','e',0
+btn_copy       DW 'C','o','p','y',0
+btn_pen        DW 'P','e','n',0
+btn_hilite     DW 'H','i','g','h','l','i','g','h','t','e','r',0
+btn_eraser     DW 'E','r','a','s','e','r',0
+btn_undo       DW 'U','n','d','o',0
+
+; Save As: a PNG filter, a default file name, and a default extension. The
+; filter is a sequence of null-terminated pairs, ended by an empty string.
+dlg_filter     DW 'P','N','G',' ','(','*','.','p','n','g',')',0
+               DW '*','.','p','n','g',0
+               DW 'A','l','l',' ','f','i','l','e','s',' ','(','*','.','*',')',0
+               DW '*','.','*',0
+               DW 0
+dlg_defname    DW 'C','a','p','t','u','r','e','.','p','n','g',0
+dlg_defext     DW 'p','n','g',0
 
 .data?
 ed_wc WNDCLASSEXW <>
+ed_ofn OPENFILENAMEW <>
+ed_file WORD MAX_PATH DUP(?)     ; the Save As file-name buffer
 
 .code
 
@@ -112,6 +143,97 @@ ec_fail:
 editor_create ENDP
 
 ; ---------------------------------------------------------------------------
+; editor_on_create(DWORD hwnd, App *app) -> eax 0.
+; Builds the toolbar: New, Save, Copy (live) and Pen, Highlighter, Eraser, Undo
+; (inert until ticket 06). Stock BUTTON controls, same as the Shell's New.
+; ---------------------------------------------------------------------------
+editor_on_create PROC USES ebx esi edi hwnd:DWORD, app:DWORD
+    LOCAL hCtl:DWORD
+    LOCAL font:DWORD
+
+    mov  ebx, hwnd
+    mov  esi, app
+
+    INVOKE GetStockObject, DEFAULT_GUI_FONT
+    mov  font, eax
+    mov  edi, [esi].App.hInstance
+
+    ; New
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_new, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 4, 4, 52, 24, ebx, IDC_ED_NEW, edi, 0
+    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
+    ; Save
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_save, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 60, 4, 56, 24, ebx, IDC_ED_SAVE, edi, 0
+    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
+    ; Copy
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_copy, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 120, 4, 56, 24, ebx, IDC_ED_COPY, edi, 0
+    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
+    ; Pen
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_pen, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 184, 4, 48, 24, ebx, IDC_ED_PEN, edi, 0
+    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
+    ; Highlighter
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_hilite, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 236, 4, 92, 24, ebx, IDC_ED_HILITE, edi, 0
+    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
+    ; Eraser
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_eraser, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 332, 4, 60, 24, ebx, IDC_ED_ERASER, edi, 0
+    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
+    ; Undo
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_undo, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 396, 4, 52, 24, ebx, IDC_ED_UNDO, edi, 0
+    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
+
+    xor  eax, eax
+    ret
+editor_on_create ENDP
+
+; ---------------------------------------------------------------------------
+; editor_copy(App *app) - put the live Snip on the clipboard through encode.asm.
+; A failure is silent; ticket 11 adds the message.
+; ---------------------------------------------------------------------------
+editor_copy PROC app:DWORD
+    INVOKE dib_snip
+    cmp  [eax].Snip.w, 1
+    jl   ecp_done
+    INVOKE encode_clipboard, eax
+ecp_done:
+    ret
+editor_copy ENDP
+
+; ---------------------------------------------------------------------------
+; editor_save(App *app) - Save As through the common dialog, then encode.
+; ---------------------------------------------------------------------------
+editor_save PROC USES ebx esi edi app:DWORD
+    ; zero the OPENFILENAMEW, then seed the file-name buffer
+    lea  edi, ed_ofn
+    xor  eax, eax
+    mov  ecx, (SIZEOF OPENFILENAMEW) / 4
+    rep  stosd
+    lea  edi, ed_file
+    mov  esi, OFFSET dlg_defname
+    mov  ecx, 6                      ; "Capture.png\0" == 12 WCHARs == 6 DWORDs
+    rep  movsd
+
+    mov  ed_ofn.lStructSize, SIZEOF OPENFILENAMEW
+    mov  eax, app
+    mov  eax, [eax].App.hwndEditor
+    mov  ed_ofn.hwndOwner, eax
+    mov  ed_ofn.lpstrFilter, OFFSET dlg_filter
+    mov  ed_ofn.nFilterIndex, 1
+    mov  ed_ofn.lpstrFile, OFFSET ed_file
+    mov  ed_ofn.nMaxFile, MAX_PATH
+    mov  ed_ofn.lpstrDefExt, OFFSET dlg_defext
+    mov  ed_ofn.Flags, OFN_OVERWRITEPROMPT OR OFN_PATHMUSTEXIST OR OFN_EXPLORER
+
+    INVOKE GetSaveFileNameW, OFFSET ed_ofn
+    test eax, eax
+    jz   esv_done
+
+    INVOKE dib_snip
+    INVOKE encode_file, eax, OFFSET ed_file
+
+esv_done:
+    ret
+editor_save ENDP
+
+; ---------------------------------------------------------------------------
 ; editor_fit(App *app, DWORD hwnd) - size the Editor's client area to the Snip
 ; and place it on the Snip's monitor. A Snip larger than the work area is
 ; capped and clipped: there is no zoom yet (ticket 17), and no pan (spec), so
@@ -140,6 +262,16 @@ editor_fit PROC USES esi app:DWORD, hwnd:DWORD
     jl   ef_done
     cmp  winH, 1
     jl   ef_done
+
+    ; The client is the toolbar plus the image. Widen it if the Snip is too
+    ; narrow to fit the toolbar; the image stays left-aligned under it.
+    cmp  winW, ED_TOOLBAR_MINW
+    jge  ef_minw
+    mov  winW, ED_TOOLBAR_MINW
+ef_minw:
+    mov  eax, winH
+    add  eax, ED_TOOLBAR_H
+    mov  winH, eax
 
     ; The Snip's screen rectangle picks the monitor to fit inside.
     mov  eax, [esi].Snip.x
@@ -238,12 +370,19 @@ editor_fit ENDP
 ; ---------------------------------------------------------------------------
 editor_do_paint PROC USES ebx esi hwnd:DWORD
     LOCAL ps:PAINTSTRUCT
+    LOCAL rc:RECT
     LOCAL srcW:DWORD
     LOCAL srcH:DWORD
     LOCAL src:DWORD
 
     INVOKE BeginPaint, hwnd, ADDR ps
     mov  esi, eax
+
+    ; The toolbar strip behind the buttons. WM_ERASEBKGND is suppressed, so
+    ; this is what paints the gaps between the controls.
+    INVOKE GetClientRect, hwnd, ADDR rc
+    mov  rc.bottom, ED_TOOLBAR_H
+    INVOKE FillRect, esi, ADDR rc, COLOR_BTNFACE_1
 
     INVOKE dib_snip
     mov  ebx, eax
@@ -261,7 +400,7 @@ editor_do_paint PROC USES ebx esi hwnd:DWORD
     cmp  srcH, 1
     jl   ep_done
 
-    INVOKE BitBlt, esi, 0, 0, srcW, srcH, src, 0, 0, SRCCOPY
+    INVOKE BitBlt, esi, 0, ED_TOOLBAR_H, srcW, srcH, src, 0, 0, SRCCOPY
 
 ep_done:
     INVOKE EndPaint, hwnd, ADDR ps
@@ -281,6 +420,8 @@ editor_wndproc PROC hwnd:DWORD, msg:DWORD, wParam:DWORD, lParam:DWORD
     je   ew_paint
     cmp  eax, WM_ERASEBKGND
     je   ew_erase
+    cmp  eax, WM_COMMAND
+    je   ew_command
     cmp  eax, WM_CLOSE
     je   ew_close
 
@@ -292,6 +433,52 @@ ew_create:
     mov  eax, lParam
     mov  eax, [eax]
     INVOKE SetWindowLongW, hwnd, GWLP_USERDATA, eax
+    ; SetWindowLongW returns the *previous* value, so re-read lpCreateParams
+    ; before handing app to editor_on_create (shell.asm does the same).
+    mov  eax, lParam
+    mov  eax, [eax]
+    INVOKE editor_on_create, hwnd, eax
+    xor  eax, eax
+    ret
+
+ew_command:
+    ; wParam: LOWORD = control id, HIWORD = notification. Toolbar buttons are
+    ; BN_CLICKED; anything else falls through.
+    mov  eax, wParam
+    shr  eax, 16
+    and  eax, 0FFFFh
+    cmp  eax, BN_CLICKED
+    jne  ew_default
+
+    mov  eax, wParam
+    and  eax, 0FFFFh
+
+    cmp  eax, IDC_ED_NEW
+    je   ew_new
+    cmp  eax, IDC_ED_COPY
+    je   ew_copy
+    cmp  eax, IDC_ED_SAVE
+    je   ew_save
+
+ew_default:
+    INVOKE DefWindowProcW, hwnd, msg, wParam, lParam
+    ret
+
+ew_new:
+    INVOKE GetWindowLongW, hwnd, GWLP_USERDATA
+    INVOKE select_begin, eax
+    xor  eax, eax
+    ret
+
+ew_copy:
+    INVOKE GetWindowLongW, hwnd, GWLP_USERDATA
+    INVOKE editor_copy, eax
+    xor  eax, eax
+    ret
+
+ew_save:
+    INVOKE GetWindowLongW, hwnd, GWLP_USERDATA
+    INVOKE editor_save, eax
     xor  eax, eax
     ret
 

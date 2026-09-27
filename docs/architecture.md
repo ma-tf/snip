@@ -21,7 +21,7 @@ concern and talks to the others through explicit context structs, not through gl
 The eventual areas, in the order the spec names them: `snip` (entry and process init),
 `shell` (the main window), `capture`, `dib`, `overlay`, `select`, `geometry`, `mask`, `editor`,
 `encode`. **Landed so far:** `snip`, `shell`, `geometry`, `capture`, `dib`, `overlay`, `select`,
-`editor`. Modules land as their tickets do; the build has no list to update.
+`editor`, `encode`. Modules land as their tickets do; the build has no list to update.
 
 ## Where it lives
 
@@ -91,6 +91,14 @@ boundary, so capture and the Editor work in screen pixels. Geometry is read fres
 session and never cached; a `WM_DISPLAYCHANGE` mid-session aborts it, and `WM_DPICHANGED`
 rescales the Overlay's chrome. See [`docs/multimonitor.md`](multimonitor.md).
 
+**A Snip leaves through WIC.** The Editor's toolbar has New, Save, and Copy (Pen,
+Highlighter, Eraser, and Undo arrive in ticket 06). Copy and Save hand the live Snip to
+`encode.asm`, which encodes it as a PNG with WIC straight from the DIB — no `HBITMAP`, one
+`IStream` body shared by the file and the clipboard — and publishes `CF_DIBV5`, a registered
+`PNG`, and `CF_DIB`. Save As is the common `GetSaveFileNameW` dialog. The COM entry points
+come from `combase.dll` at runtime, because `ole32`'s are forwarders Crinkler cannot read.
+See [`docs/encode.md`](encode.md).
+
 **Returns.** `eax` 0/nonzero for our own functions; Win32 `BOOL`/`HRESULT` values pass through
 untouched.
 
@@ -125,6 +133,7 @@ the build at ~5.5 KB linked, and what keeps Crinkler's `size` build near 1.5 KB;
 - [The Selection](select.md) — the Snipping session and the drag state machine.
 - [The Snip and the capture path](capture.md) — the region blit, alpha synthesis, and the
   Editor window.
+- [Copy and Save As](encode.md) — WIC encoding, the clipboard formats, and the Save dialog.
 - [DPI and multi-monitor](multimonitor.md) — coordinate spaces, the re-read rules, and the
   Overlay's DPI-scaled chrome.
 - [`CONTEXT.md`](../CONTEXT.md) — the vocabulary the code and the tickets share.
