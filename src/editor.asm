@@ -43,13 +43,14 @@ editor_on_create PROTO STDCALL :DWORD, :DWORD              ; void editor_on_crea
 editor_fit      PROTO STDCALL :DWORD, :DWORD               ; void editor_fit(App *app, DWORD hwnd)
 editor_view     PROTO STDCALL :DWORD                       ; BOOL editor_view(DWORD hwnd) - compute the fit into ed_*
 editor_map      PROTO STDCALL :DWORD, :DWORD, :DWORD       ; BOOL editor_map(hwnd, SDWORD *px, SDWORD *py) - client -> Snip
+editor_buffer   PROTO STDCALL :DWORD, :DWORD, :DWORD       ; HDC editor_buffer(HDC ref, DWORD bufW, DWORD bufH) - the paint backbuffer
 editor_do_paint PROTO STDCALL :DWORD                       ; void editor_do_paint(DWORD hwnd)
 editor_save     PROTO STDCALL :DWORD                       ; void editor_save(App *app)
 editor_copy     PROTO STDCALL :DWORD                       ; void editor_copy(App *app)
 editor_set_tool PROTO STDCALL :DWORD, :DWORD               ; void editor_set_tool(DWORD hwnd, DWORD tool)
 editor_wndproc  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 
-ED_STYLE EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX OR WS_MAXIMIZEBOX OR WS_THICKFRAME
+ED_STYLE EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX OR WS_MAXIMIZEBOX OR WS_THICKFRAME OR WS_CLIPCHILDREN
 
 ; The toolbar strip and the minimum client width that fits all seven buttons.
 ED_TOOLBAR_H    EQU 32
@@ -122,6 +123,15 @@ ed_sh          DWORD ?
 ed_hwndPen     DWORD ?
 ed_hwndHilite  DWORD ?
 ed_hwndEraser  DWORD ?
+
+; The paint backbuffer: a client-sized compatible bitmap and DC, rebuilt only
+; when the client size changes. The whole frame is drawn here and presented with
+; one BitBlt, so a stroke drag never shows a half-painted window.
+ed_bufdc       DWORD ?      ; the backbuffer memory DC
+ed_bufbm       DWORD ?      ; its bitmap
+ed_bufold      DWORD ?      ; what was selected in ed_bufdc before ed_bufbm
+ed_bufw        DWORD ?      ; the client size the buffer was built for
+ed_bufh        DWORD ?
 
 .code
 
@@ -632,6 +642,65 @@ em_no:
 editor_map ENDP
 
 ; ---------------------------------------------------------------------------
+; editor_buffer(HDC ref, DWORD bufW, DWORD bufH) -> HDC in eax, or 0.
+; The paint backbuffer: a compatible DC holding a client-sized bitmap, cached
+; across paints and rebuilt only when the client size changes. Drawing the whole
+; frame here and BitBlt-ing it once is what stops the flicker a stroke drag
+; would otherwise show; the same present-once discipline the Overlay uses.
+; ---------------------------------------------------------------------------
+editor_buffer PROC USES ebx esi edi ref:DWORD, bufW:DWORD, bufH:DWORD
+    cmp  bufW, 1
+    jl   eb_no
+    cmp  bufH, 1
+    jl   eb_no
+
+    ; Already the right size? then reuse it.
+    mov  eax, ed_bufdc
+    test eax, eax
+    jz   eb_build
+    mov  eax, ed_bufw
+    cmp  eax, bufW
+    jne  eb_drop
+    mov  eax, ed_bufh
+    cmp  eax, bufH
+    je   eb_have
+
+eb_drop:
+    ; Select the original bitmap back before deleting the backbuffer's, then
+    ; destroy both and rebuild.
+    INVOKE SelectObject, ed_bufdc, ed_bufold
+    INVOKE DeleteObject, ed_bufbm
+    INVOKE DeleteDC, ed_bufdc
+    mov  ed_bufdc, 0
+    mov  ed_bufbm, 0
+
+eb_build:
+    INVOKE CreateCompatibleDC, ref
+    mov  ed_bufdc, eax
+    test eax, eax
+    jz   eb_no
+
+    INVOKE CreateCompatibleBitmap, ref, bufW, bufH
+    mov  ed_bufbm, eax
+    test eax, eax
+    jz   eb_no
+
+    INVOKE SelectObject, ed_bufdc, ed_bufbm
+    mov  ed_bufold, eax
+    mov  eax, bufW
+    mov  ed_bufw, eax
+    mov  eax, bufH
+    mov  ed_bufh, eax
+
+eb_have:
+    mov  eax, ed_bufdc
+    ret
+eb_no:
+    xor  eax, eax
+    ret
+editor_buffer ENDP
+
+; ---------------------------------------------------------------------------
 ; editor_do_paint(DWORD hwnd) - draw the Snip fitted into the image area, then
 ; overdraw the in-progress stroke at the same scale. A Snip that fits draws 1:1;
 ; a larger one is scaled down so the whole image is visible, with no pan.
@@ -645,22 +714,44 @@ editor_do_paint PROC USES ebx esi edi hwnd:DWORD
     LOCAL bmp:DWORD
     LOCAL gfx:DWORD
     LOCAL stride:DWORD
+    LOCAL memdc:DWORD
+    LOCAL clientW:DWORD
+    LOCAL clientH:DWORD
 
     INVOKE BeginPaint, hwnd, ADDR ps
-    mov  esi, eax
+    mov  esi, eax                    ; the paint DC
+
+    ; Draw the whole frame into a client-sized backbuffer and present it with one
+    ; BitBlt. Painting the toolbar, the backdrop, the image, and the live stroke
+    ; straight to the window shows intermediate frames - the flicker. If no
+    ; buffer can be built, fall back to painting the window DC directly.
+    INVOKE GetClientRect, hwnd, ADDR rc
+    mov  eax, rc.right
+    sub  eax, rc.left
+    mov  clientW, eax
+    mov  eax, rc.bottom
+    sub  eax, rc.top
+    mov  clientH, eax
+
+    INVOKE editor_buffer, esi, clientW, clientH
+    test eax, eax
+    jnz  ep_have
+    mov  eax, esi
+ep_have:
+    mov  memdc, eax
 
     ; The toolbar strip behind the buttons. WM_ERASEBKGND is suppressed, so
     ; this is what paints the gaps between the controls.
     INVOKE GetClientRect, hwnd, ADDR rc
     mov  rc.bottom, ED_TOOLBAR_H
-    INVOKE FillRect, esi, ADDR rc, COLOR_BTNFACE_1
+    INVOKE FillRect, memdc, ADDR rc, COLOR_BTNFACE_1
 
     ; Everything below the toolbar is the Snip's backdrop. A free-form Snip is
     ; not opaque, so the transparent region must reveal a defined colour rather
     ; than stale pixels.
     INVOKE GetClientRect, hwnd, ADDR rc
     mov  rc.top, ED_TOOLBAR_H
-    INVOKE FillRect, esi, ADDR rc, COLOR_WINDOW_1
+    INVOKE FillRect, memdc, ADDR rc, COLOR_WINDOW_1
 
     INVOKE dib_snip
     mov  ebx, eax
@@ -672,17 +763,17 @@ editor_do_paint PROC USES ebx esi edi hwnd:DWORD
     mov  srcH, eax
 
     cmp  bits, 0
-    jz   ep_done
+    jz   ep_present
     cmp  srcW, 1
-    jl   ep_done
+    jl   ep_present
     cmp  srcH, 1
-    jl   ep_done
+    jl   ep_present
 
     ; The fit is the single source of truth for where the image sits and how big
     ; it is drawn. If there is no view there is nothing to draw.
     INVOKE editor_view, hwnd
     test eax, eax
-    jz   ep_done
+    jz   ep_present
 
     ; Draw the Snip through GDI+, whose image path honours the alpha channel.
     ; BitBlt would paint a free-form cut as a full rectangle. A fitted Snip is
@@ -695,7 +786,7 @@ editor_do_paint PROC USES ebx esi edi hwnd:DWORD
     INVOKE GdipCreateBitmapFromScan0, srcW, srcH, stride, PixelFormat32bppARGB, bits, ADDR bmp
     test eax, eax
     jnz  ep_preview
-    INVOKE GdipCreateFromHDC, esi, ADDR gfx
+    INVOKE GdipCreateFromHDC, memdc, ADDR gfx
     test eax, eax
     jnz  ep_dispose
 
@@ -717,10 +808,17 @@ ep_bmp:
     INVOKE GdipDisposeImage, bmp
 
 ep_preview:
-    ; The in-progress stroke goes straight onto the paint DC, not Working, so a
+    ; The in-progress stroke goes straight onto the buffer, not Working, so a
     ; translucent Highlighter is not double-blended across its own drag frames.
     ; It is scaled to the same view as the image.
-    INVOKE ink_preview, esi, ed_vx, ed_vy, ed_vw, ed_vh, srcW, srcH
+    INVOKE ink_preview, memdc, ed_vx, ed_vy, ed_vw, ed_vh, srcW, srcH
+
+ep_present:
+    ; Present the finished frame in one blit - unless there was no buffer, in
+    ; which case memdc is the window DC and it is already on screen.
+    cmp  memdc, esi
+    je   ep_done
+    INVOKE BitBlt, esi, 0, 0, clientW, clientH, memdc, 0, 0, SRCCOPY
 
 ep_done:
     INVOKE EndPaint, hwnd, ADDR ps

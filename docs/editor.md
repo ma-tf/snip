@@ -70,6 +70,16 @@ while drawing and then thin once committed.
 
 ## Gotchas
 
+- **The whole client is double-buffered, and the toolbar children are clipped
+  out.** A stroke drag invalidates the whole client on every mouse move, so
+  `editor_do_paint` draws into a cached client-sized backbuffer (`editor_buffer`)
+  and presents it with one `BitBlt`. Painting the toolbar, backdrop, image, and
+  live preview straight to the window would show intermediate frames — the
+  flicker the Overlay's present-once discipline already avoids. `WS_CLIPCHILDREN`
+  keeps the parent off the seven toolbar buttons, which would otherwise flash as
+  the toolbar strip is refilled each frame. The buffer is rebuilt only when the
+  client size changes; if it cannot be built, paint falls back to the window DC
+  directly so ink still works.
 - **`ch` is a register.** A local named `ch` is a syntax error; the client height
   local is not spelled that way for exactly this reason (the same trap `docs/capture.md`
   records for the toolbar maths).

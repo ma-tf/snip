@@ -118,6 +118,7 @@ CommDlgExtendedError PROTO STDCALL
 ; ---------------------------------------------------------------------------
 GetStockObject     PROTO STDCALL :SDWORD
 CreateCompatibleDC PROTO STDCALL :DWORD
+CreateCompatibleBitmap PROTO STDCALL :DWORD, :SDWORD, :SDWORD
 CreateDIBSection   PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 CreatePen          PROTO STDCALL :SDWORD, :SDWORD, :DWORD
 SelectObject       PROTO STDCALL :DWORD, :DWORD
@@ -189,6 +190,7 @@ WS_SYSMENU          EQU 00080000h
 WS_MINIMIZEBOX      EQU 00020000h
 WS_MAXIMIZEBOX      EQU 00010000h
 WS_THICKFRAME       EQU 00040000h
+WS_CLIPCHILDREN     EQU 02000000h      ; keep the parent's paint off its child controls
 WS_CHILD            EQU 40000000h
 WS_VISIBLE          EQU 10000000h
 WS_TABSTOP          EQU 00010000h
