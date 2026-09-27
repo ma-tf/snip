@@ -51,4 +51,5 @@ stored in `App.mode` or `App.delay`.
 
 - [`docs/architecture.md`](architecture.md) — the explainer template and module layout.
 - [`docs/build.md`](build.md) — the build loop and why `comctl32.lib` is linked.
+- [`docs/keyboard.md`](keyboard.md) — `Alt+N`, `Alt+M`, and `Alt+D` and how they reach the controls.
 - `.scratch/asm-snip-build/issues/15-shell-dropdown-icons.md` — the change that added icons.

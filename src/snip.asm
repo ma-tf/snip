@@ -73,11 +73,24 @@ WinMainASM PROC
     test eax, eax
     jz   shell_fail
 
+    ; Accelerator tables for the keyboard map (ticket 12). A failure is not
+    ; fatal - the shortcuts simply do not fire - so the return is ignored, like
+    ; InitCommonControlsEx above. keys_free destroys them on the way out.
+    INVOKE keys_init
+
     ; Message pump
 msg_loop:
     INVOKE GetMessageW, OFFSET msg, 0, 0, 0
     test eax, eax
     jle  done                  ; 0 == WM_QUIT, -1 == error
+
+    ; The keyboard map gets first refusal: an accelerator or IsDialogMessageW
+    ; consumes the message (keys_translate returns 1), so it never reaches
+    ; TranslateMessage/DispatchMessageW. See docs/keyboard.md.
+    INVOKE keys_translate, OFFSET app, OFFSET msg
+    test eax, eax
+    jnz  msg_loop
+
     INVOKE TranslateMessage, OFFSET msg
     INVOKE DispatchMessageW, OFFSET msg
     jmp  msg_loop
@@ -94,6 +107,7 @@ shell_fail:
     INVOKE ExitProcess, 1
 
 done:
+    INVOKE keys_free
     INVOKE ExitProcess, 0
 WinMainASM ENDP
 

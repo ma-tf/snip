@@ -26,7 +26,14 @@
 ; them for free. A failure aborts the operation and reports through err.asm; the
 ; Editor stays open so the user can retry.
 ;
-; See docs/capture.md, docs/encode.md, and docs/ink.md.
+; The keyboard map (ticket 12) reaches this window through keys.asm:
+; TranslateAcceleratorW turns Alt+N, Ctrl+C, Ctrl+S, and Ctrl+Z into a
+; WM_COMMAND carrying the IDA_* ids below, and IsDialogMessageW supplies Tab
+; traversal. Copy/Save/Undo share the button handlers - ew_command routes an
+; accelerator to the same ew_copy/ew_save/ew_undo labels. Enter and Escape are
+; unbound here (the reference's Escape does nothing in the editor).
+;
+; See docs/capture.md, docs/encode.md, docs/ink.md, and docs/keyboard.md.
 
 .386
 .model flat, stdcall
@@ -947,11 +954,31 @@ ew_minmax:
     ret
 
 ew_command:
-    ; wParam: LOWORD = control id, HIWORD = notification. Toolbar buttons are
-    ; BN_CLICKED; anything else falls through.
+    ; wParam: LOWORD = control id, HIWORD = notification. An accelerator (ticket
+    ; 12) arrives with notification 1, the same value CBN_SELCHANGE carries, so
+    ; the IDA_* ids are dispatched before the toolbar buttons. Enter and Escape
+    ; arrive as IDOK/IDCANCEL and are deliberately unhandled: Escape does nothing
+    ; in the Editor, matching the reference. See docs/keyboard.md.
     mov  eax, wParam
     shr  eax, 16
     and  eax, 0FFFFh
+    cmp  eax, 1
+    jne  ew_command_click
+
+    mov  eax, wParam
+    and  eax, 0FFFFh
+
+    cmp  eax, IDA_NEW
+    je   ew_new
+    cmp  eax, IDA_COPY
+    je   ew_copy
+    cmp  eax, IDA_SAVE
+    je   ew_save
+    cmp  eax, IDA_UNDO
+    je   ew_undo
+    jmp  ew_default
+
+ew_command_click:
     cmp  eax, BN_CLICKED
     jne  ew_default
 

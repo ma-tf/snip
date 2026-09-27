@@ -108,6 +108,18 @@ IsIconic         PROTO STDCALL :DWORD
 WindowFromPoint  PROTO STDCALL :SDWORD, :SDWORD
 GetAncestor      PROTO STDCALL :DWORD, :DWORD             ; (hwnd, GA_ROOT)
 
+; ticket 12: the keyboard map. CreateAcceleratorTableW builds a table from our
+; ACCEL array, TranslateAcceleratorW turns a matching key into a WM_COMMAND for
+; the window it is handed, and IsDialogMessageW supplies Tab traversal and combo
+; arrows. IsWindowVisible decides whether a window is on screen to service a
+; shortcut; GetDlgItem reaches the Shell's drop-downs by id. See docs/keyboard.md.
+CreateAcceleratorTableW PROTO STDCALL :DWORD, :SDWORD
+DestroyAcceleratorTable PROTO STDCALL :DWORD
+TranslateAcceleratorW   PROTO STDCALL :DWORD, :DWORD, :DWORD
+IsDialogMessageW        PROTO STDCALL :DWORD, :DWORD
+IsWindowVisible         PROTO STDCALL :DWORD
+GetDlgItem              PROTO STDCALL :DWORD, :SDWORD
+
 ; ticket 09: the monitor under the pointer for full-screen mode.
 ; MonitorFromPoint(POINT pt, DWORD flags) also takes the POINT BY VALUE, exactly
 ; like WindowFromPoint: declared as two SDWORDs and called MonitorFromPoint(x, y).
@@ -251,6 +263,7 @@ BM_SETSTATE         EQU 00F3h          ; show a push button in the pressed state
 
 CB_GETCURSEL        EQU 0147h
 CB_SETCURSEL        EQU 014Eh
+CB_SHOWDROPDOWN     EQU 014Fh           ; ticket 12: Alt+M / Alt+D drop the list
 
 ; ComboBoxEx (comctl32). CBEM_* are WM_USER-relative; ICC registers the class.
 WM_USER             EQU 0400h
@@ -306,6 +319,17 @@ DWM_CLOAKED         EQU 14             ; DWMWA_CLOAKED
 GWLP_USERDATA       EQU -21
 
 VK_ESCAPE           EQU 1Bh
+
+; ticket 12: ACCEL fVirt flags (winuser.h) and the ids IsDialogMessageW emits
+; for Enter and Escape. IDOK/IDCANCEL are deliberately ignored by both WndProcs
+; - Escape does nothing in the Editor, matching the reference - but they are kept
+; named so the magic 1 and 2 in a message trace have an owner.
+FVIRTKEY            EQU 01h
+FSHIFT              EQU 04h
+FCONTROL            EQU 08h
+FALT                EQU 10h
+IDOK                EQU 1
+IDCANCEL            EQU 2
 
 ; CreateFontW: the readout plate's font is built per effective DPI.
 FW_NORMAL           EQU 400
@@ -406,6 +430,18 @@ MSG STRUCT
     pt       POINT <>
     lPrivate DWORD ?
 MSG ENDS                               ; sizeof == 32
+
+; ACCEL (winuser.h) is `{ BYTE fVirt; WORD key; WORD cmd; }` and the C compiler
+; pads it to 6 bytes so `key` is 2-aligned. MASM's default structure packing is
+; 1, which would make this 5 bytes and scramble every entry after the first, so
+; the pad byte is spelled out. The .ERRNZ is the guard against a silent regression.
+ACCEL STRUCT
+    fVirt   BYTE ?
+    pad0    BYTE ?
+    key     WORD ?
+    cmd     WORD ?
+ACCEL ENDS                             ; sizeof == 6
+.ERRNZ SIZEOF ACCEL - 6
 
 BITMAPINFOHEADER STRUCT
     biSize          DWORD ?

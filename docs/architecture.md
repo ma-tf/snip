@@ -141,6 +141,13 @@ failure (COM, the WIC factory, or the Shell window unavailable) ends the process
 **Returns.** `eax` 0/nonzero for our own functions; Win32 `BOOL`/`HRESULT` values pass through
 untouched.
 
+**The keyboard map is a table, not key handlers.** `keys.asm` builds two `HACCEL`s and the pump
+offers every message to `keys_translate` before dispatching it. `TranslateAcceleratorW` turns
+`Alt+N`, `Alt+M`, `Alt+D`, `Ctrl+C`, `Ctrl+S`, and `Ctrl+Z` into `WM_COMMAND`s carrying
+`IDA_*` ids, and `IsDialogMessageW` supplies Tab traversal and combo arrows. Routing is by
+capability — the Editor's table first, then the Shell's — so the shortcuts fire regardless of
+which window has focus. See [`docs/keyboard.md`](keyboard.md).
+
 **Segments earn their file bytes.** Where a module declares its data decides whether it costs
 bytes in `snip.exe`. Read-only strings go in `.const` (`.rdata`); zero-initialised globals go
 in `.data?` (`.bss`), which the loader zero-fills and which holds no file bytes. Reach for
@@ -175,6 +182,7 @@ the linked build small and the Crinkler `size` build smaller still; see
 - [The Snip and the capture path](capture.md) — the region blit, alpha synthesis, and the
   Editor window.
 - [The Editor view](editor.md) — resizing, fit-to-window, and the client→Snip mapping.
+- [The keyboard map](keyboard.md) — the accelerators, the routing, and Tab traversal.
 - [Copy and Save As](encode.md) — WIC encoding, the clipboard formats, and the Save dialog.
 - [Ink](ink.md) — the annotation model, the command log, and the Eraser and Undo.
 - [Errors](errors.md) — the message-box error surface and which failures are fatal.

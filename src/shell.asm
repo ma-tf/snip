@@ -20,6 +20,7 @@ PUBLIC shell_create
 shell_on_create  PROTO STDCALL :DWORD, :DWORD
 shell_combo_item PROTO STDCALL :DWORD, :DWORD, :DWORD
 shell_make_icons PROTO STDCALL
+shell_focus_combo PROTO STDCALL :DWORD, :DWORD
 smi_clear        PROTO STDCALL :DWORD
 smi_hollow       PROTO STDCALL :DWORD
 smi_publish      PROTO STDCALL :DWORD, :DWORD
@@ -169,6 +170,20 @@ wm_command:
     shr  edx, 16
     and  edx, 0FFFFh
 
+    ; An accelerator (ticket 12) arrives here as a WM_COMMAND whose notification
+    ; word is 1, which is also CBN_SELCHANGE's value - so the IDA_* ids are
+    ; dispatched before any control-notification logic. See docs/keyboard.md.
+    cmp  edx, 1
+    jne  wm_notify_click
+    cmp  eax, IDA_NEW
+    je   wm_accel_new
+    cmp  eax, IDA_MODE
+    je   wm_accel_mode
+    cmp  eax, IDA_DELAY
+    je   wm_accel_delay
+    jmp  wnd_default
+
+wm_notify_click:
     ; New: start a Snipping session (ticket 02).
     cmp  edx, BN_CLICKED
     jne  wm_notify_combo
@@ -176,6 +191,25 @@ wm_command:
     jne  wnd_default
     INVOKE GetWindowLongW, hwnd, GWLP_USERDATA
     INVOKE select_begin, eax
+    xor  eax, eax
+    ret
+
+; Alt+N: the same as clicking New. select_begin hides the Shell, so it goes last.
+wm_accel_new:
+    INVOKE GetWindowLongW, hwnd, GWLP_USERDATA
+    INVOKE select_begin, eax
+    xor  eax, eax
+    ret
+
+; Alt+M / Alt+D: put focus in the drop-down and drop it, the reference's
+; keyboard path to the choice. shell_focus_combo is shared by the two.
+wm_accel_mode:
+    INVOKE shell_focus_combo, hwnd, IDC_MODE
+    xor  eax, eax
+    ret
+
+wm_accel_delay:
+    INVOKE shell_focus_combo, hwnd, IDC_DELAY
     xor  eax, eax
     ret
 
@@ -214,6 +248,21 @@ wm_destroy_quit:
     xor  eax, eax
     ret
 shell_wndproc ENDP
+
+; ---------------------------------------------------------------------------
+; shell_focus_combo(hwnd, id) -> eax 0. Alt+M / Alt+D (ticket 12): put focus in
+; the drop-down named by id, then drop its list. CB_SHOWDROPDOWN is sent to the
+; control, not its list, so no CB_GETCOMBOBOXINFO is needed. GetDlgItem reaches
+; the control by id without the Shell having to remember its handle.
+; ---------------------------------------------------------------------------
+shell_focus_combo PROC hwnd:DWORD, id:DWORD
+    INVOKE GetDlgItem, hwnd, id
+    mov  edx, eax
+    INVOKE SetFocus, edx
+    INVOKE SendMessageW, edx, CB_SHOWDROPDOWN, 1, 0
+    xor  eax, eax
+    ret
+shell_focus_combo ENDP
 
 ; ---------------------------------------------------------------------------
 ; shell_on_create(hwnd, app) -> eax 0.

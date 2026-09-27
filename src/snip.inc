@@ -92,6 +92,19 @@ IDC_ED_HILITE       EQU 1105
 IDC_ED_ERASER       EQU 1106
 IDC_ED_UNDO         EQU 1107
 
+; Accelerator command ids (ticket 12). A dedicated range: TranslateAcceleratorW
+; delivers an accelerator as a WM_COMMAND whose notification word is 1, which
+; would be ambiguous against a control's BN_CLICKED (0) or CBN_SELCHANGE (1).
+; The WndProcs dispatch these ids before any control-notification logic, so the
+; ambiguity never arises. Multi-window shortcuts share the one id: Alt+N is
+; IDA_NEW on both windows. See docs/keyboard.md.
+IDA_NEW             EQU 1201
+IDA_MODE            EQU 1202
+IDA_DELAY           EQU 1203
+IDA_COPY            EQU 1204
+IDA_SAVE            EQU 1205
+IDA_UNDO            EQU 1206
+
 ; The mode drop-down's indices, in list order.
 MODE_RECT           EQU 0
 MODE_WINDOW         EQU 1
@@ -102,6 +115,14 @@ MODE_FREE           EQU 3
 ; Public labels
 ; ---------------------------------------------------------------------------
 shell_create PROTO STDCALL :DWORD   ; HWND shell_create(App *app) - see shell.asm
+
+; keys.asm - the keyboard map: the accelerator tables and their routing. It
+; owns no actions; a matched key becomes a WM_COMMAND carrying an IDA_* id,
+; which shell.asm or editor.asm handles. keys_init is called once from snip.asm;
+; keys_translate is called by the pump for every message. See docs/keyboard.md.
+keys_init      PROTO STDCALL                    ; BOOL keys_init(void) - build the tables
+keys_free      PROTO STDCALL                    ; void keys_free(void) - destroy them on exit
+keys_translate PROTO STDCALL :DWORD, :DWORD     ; BOOL keys_translate(App *app, MSG *msg) - 1 if consumed
 
 ; overlay.asm - the Overlay window. It owns its class, its layered DIB, and the
 ; dim and chrome. It does not own the Selection; select.asm does.

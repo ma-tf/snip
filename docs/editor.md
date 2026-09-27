@@ -100,6 +100,7 @@ while drawing and then thin once committed.
 
 - [`docs/capture.md`](capture.md) — the Snip, its Pristine twin, and the Editor's creation.
 - [`docs/ink.md`](ink.md) — the annotation model the mouse feeds.
+- [`docs/keyboard.md`](keyboard.md) — Tab traversal and the Copy, Save, and Undo shortcuts.
 - [`docs/multimonitor.md`](multimonitor.md) — the work-area clamp and DPI.
 - [`CONTEXT.md`](../CONTEXT.md) — Snip, Working bitmap, Annotation.
 - [Ticket 17](../.scratch/asm-snip-build/issues/17-editor-zoom.md) — resize, fit, and the deferred zoom.
