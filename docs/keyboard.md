@@ -23,7 +23,8 @@ Six shortcuts, plus Tab traversal:
 
 Enter is **deliberately unbound** on both windows, and Escape does nothing in the
 Editor. There is no "default button", so Enter never implicitly means New — Tab to
-the control you want and press Space.
+the control you want and press Space. The Shell paints `Alt+N` as a centred hint
+below its controls, so the primary shortcut is discoverable without opening a menu.
 
 ## Where it lives
 

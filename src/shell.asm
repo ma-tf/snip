@@ -4,8 +4,12 @@
 ; A New button and two ComboBoxEx drop-downs (mode and Delay), each row carrying
 ; a 16x16 icon drawn at runtime with GDI into a shared image list - no icon
 ; resources, so no .rsrc section and no resource compiler. Either drop-down
-; records its choice in App; New does nothing yet. Starting a session is ticket
-; 02. See docs/shell.md.
+; records its choice in App; New starts a Snipping session through select.asm.
+;
+; The window is resizable. The controls are fixed at the top; the space below
+; them carries a centred hint that advertises Alt+N, laid out in WM_SIZE. The
+; hint is a stock Static control, transparent over the window background. See
+; docs/shell.md.
 
 .386
 .model flat, stdcall
@@ -18,6 +22,7 @@ PUBLIC shell_create
 
 ; Forward declarations so INVOKE can reach callees defined later in the file.
 shell_on_create  PROTO STDCALL :DWORD, :DWORD
+shell_layout     PROTO STDCALL :DWORD
 shell_combo_item PROTO STDCALL :DWORD, :DWORD, :DWORD
 shell_make_icons PROTO STDCALL
 shell_focus_combo PROTO STDCALL :DWORD, :DWORD
@@ -39,8 +44,10 @@ shell_class   DW 'S','n','i','p','S','h','e','l','l',0
 shell_title   DW 'S','n','i','p','p','i','n','g',' ','T','o','o','l',0
 cls_button    DW 'B','u','t','t','o','n',0
 cls_combo     DW 'C','o','m','b','o','B','o','x','E','x','3','2',0
+cls_static    DW 'S','t','a','t','i','c',0
 
 text_new      DW 'N','e','w',0
+hint_text     DW 'P','r','e','s','s',' ','A','l','t','+','N',' ','f','o','r',' ','a',' ','n','e','w',' ','s','n','i','p',0
 
 mode_rect     DW 'R','e','c','t','a','n','g','l','e',0
 mode_win      DW 'W','i','n','d','o','w',0
@@ -82,9 +89,20 @@ pts_hand_h    POINT <8,8>, <11,10>                ; clock: hour hand out
 shell_wc      WNDCLASSEXW <>
 shell_icons   DWORD ?            ; HIMAGELIST, ours to destroy. Module-private
                                  ; because the Shell is a singleton.
+shell_hint    DWORD ?            ; the hint Static, laid out in WM_SIZE
 sfc_in        INPUT 4 DUP(<>)    ; ticket 12: the Alt+Down SendInput batch
 
-SHELL_STYLE   EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX
+; The Shell is resizable and maximizable. The three controls stay fixed at the
+; top; the hint is centred in the space below them.
+SHELL_STYLE      EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX OR WS_MAXIMIZEBOX OR WS_THICKFRAME
+
+SHELL_MARGIN     EQU 12          ; inset of the control row and the hint
+SHELL_ROW_BOTTOM EQU 44          ; below the 26px control row that starts at y=12
+SHELL_MINW       EQU 404         ; client width of the control row plus margins
+SHELL_MINH       EQU 120         ; the control row and a line of hint
+SHELL_DEFW       EQU 440         ; a little slack over the minimum
+SHELL_DEFH       EQU 180
+SHELL_HINT_COLOR EQU 00808080h   ; COLORREF grey: the hint is secondary
 
 ; ---------------------------------------------------------------------------
 .code
@@ -116,7 +134,7 @@ shell_create PROC USES ebx app:DWORD
     jz   shell_create_done_fail
 
     mov  edx, [ebx].App.hInstance
-    INVOKE CreateWindowExW, 0, OFFSET shell_class, OFFSET shell_title, SHELL_STYLE, CW_USEDEFAULT, CW_USEDEFAULT, 420, 140, 0, 0, edx, ebx
+    INVOKE CreateWindowExW, 0, OFFSET shell_class, OFFSET shell_title, SHELL_STYLE, CW_USEDEFAULT, CW_USEDEFAULT, SHELL_DEFW, SHELL_DEFH, 0, 0, edx, ebx
     test eax, eax
     jz   shell_create_done
 
@@ -138,10 +156,17 @@ shell_create ENDP
 shell_wndproc PROC hwnd:DWORD, msg:DWORD, wParam:DWORD, lParam:DWORD
     LOCAL id:DWORD
     LOCAL app:DWORD
+    LOCAL rc:RECT
 
     mov  eax, msg
     cmp  eax, WM_CREATE
     je   wm_create
+    cmp  eax, WM_SIZE
+    je   wm_size
+    cmp  eax, WM_GETMINMAXINFO
+    je   wm_minmax
+    cmp  eax, WM_CTLCOLORSTATIC
+    je   wm_ctlcolor
     cmp  eax, WM_COMMAND
     je   wm_command
     cmp  eax, WM_DESTROY
@@ -160,6 +185,40 @@ wm_create:
     mov  eax, [eax]
     INVOKE shell_on_create, hwnd, eax
     xor  eax, eax
+    ret
+
+wm_size:
+    ; The controls are fixed; only the hint moves. WM_SIZE arrives after
+    ; WM_CREATE with the real client size, and again on every resize.
+    INVOKE shell_layout, hwnd
+    xor  eax, eax
+    ret
+
+wm_minmax:
+    ; Start from DefWindowProc's limits, then raise the minimum so the window
+    ; cannot be dragged smaller than the control row and a line of hint.
+    INVOKE DefWindowProcW, hwnd, WM_GETMINMAXINFO, 0, lParam
+    mov  rc.left, 0
+    mov  rc.top, 0
+    mov  rc.right, SHELL_MINW
+    mov  rc.bottom, SHELL_MINH
+    INVOKE AdjustWindowRect, ADDR rc, SHELL_STYLE, 0
+    mov  eax, lParam
+    mov  ecx, rc.right
+    sub  ecx, rc.left
+    mov  [eax].MINMAXINFO.ptMinTrackSize.x, ecx
+    mov  ecx, rc.bottom
+    sub  ecx, rc.top
+    mov  [eax].MINMAXINFO.ptMinTrackSize.y, ecx
+    xor  eax, eax
+    ret
+
+wm_ctlcolor:
+    ; The hint shows the window background through it: transparent text and no
+    ; background fill from the static. wParam is the static's HDC.
+    INVOKE SetBkMode, wParam, TRANSPARENT_BK
+    INVOKE SetTextColor, wParam, SHELL_HINT_COLOR
+    INVOKE GetStockObject, NULL_BRUSH
     ret
 
 wm_command:
@@ -347,9 +406,47 @@ shell_on_create PROC USES ebx esi hwnd:DWORD, app:DWORD
     INVOKE SendMessageW, hCtl, CB_SETCURSEL, 0, 0
     INVOKE SendMessageW, hCtl, WM_SETFONT, font, 1
 
+    ; --- hint: centred in the space below the control row, id IDC_HINT -------
+    ; Created at a placeholder size; WM_SIZE (which follows WM_CREATE) gives it
+    ; the real region through shell_layout.
+    mov  edx, [esi].App.hInstance
+    INVOKE CreateWindowExW, 0, OFFSET cls_static, OFFSET hint_text, WS_CHILD OR WS_VISIBLE OR SS_CENTER OR SS_CENTERIMAGE, SHELL_MARGIN, SHELL_ROW_BOTTOM, 200, 40, ebx, IDC_HINT, edx, 0
+    mov  shell_hint, eax
+    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
+
+    ; Lay out once here too, so the hint is placed even if no WM_SIZE follows
+    ; (it does; re-running is harmless).
+    INVOKE shell_layout, ebx
+
     xor  eax, eax
     ret
 shell_on_create ENDP
+
+; ---------------------------------------------------------------------------
+; shell_layout(hwnd) -> void. The controls are fixed at the top; the hint fills
+; the rectangle below them, inset by SHELL_MARGIN, and centres its text. Called
+; from WM_SIZE and once from shell_on_create.
+; ---------------------------------------------------------------------------
+shell_layout PROC USES edi hwnd:DWORD
+    LOCAL rc:RECT
+
+    mov  eax, shell_hint
+    test eax, eax
+    jz   sl_done
+
+    INVOKE GetClientRect, hwnd, ADDR rc
+    mov  edi, rc.right
+    sub  edi, SHELL_MARGIN          ; hint width
+    mov  edx, rc.bottom
+    sub  edx, SHELL_ROW_BOTTOM      ; hint height
+    test edi, edi
+    jle  sl_done
+    test edx, edx
+    jle  sl_done
+    INVOKE MoveWindow, shell_hint, SHELL_MARGIN, SHELL_ROW_BOTTOM, edi, edx, 1
+sl_done:
+    ret
+shell_layout ENDP
 
 ; ---------------------------------------------------------------------------
 ; shell_combo_item(hcombo, pszText, imageIndex) -> eax = new index or CB_ERR.

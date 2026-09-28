@@ -7,8 +7,10 @@ Follows the template in [`docs/architecture.md`](architecture.md).
 
 One small top-level window titled *Snipping Tool* holding three stock controls: a New button
 and two drop-downs (the snip mode and the delay). Each drop-down row carries a 16×16 icon.
-Either drop-down records its choice in `App`; the button does nothing yet. The Shell is a
-singleton, so its window class and its one piece of chrome state live in the module.
+Either drop-down records its choice in `App`; New starts a Snipping session. The window is
+resizable — the controls stay fixed at the top and the space below them carries a centred hint
+advertising `Alt+N`. The Shell is a singleton, so its window class and its one piece of chrome
+state live in the module.
 
 ## Where it lives
 
@@ -32,6 +34,15 @@ index. Both drop-downs share the one list, destroyed in `WM_DESTROY`.
 **State.** `CBN_SELCHANGE` arrives as `WM_COMMAND`; the index is read with `CB_GETCURSEL` and
 stored in `App.mode` or `App.delay`.
 
+**Resizable, with a hint.** The style carries `WS_THICKFRAME | WS_MAXIMIZEBOX`, and
+`WM_GETMINMAXINFO` raises the floor so the window cannot be dragged below the control row and a
+line of hint (a client of 404×120). The controls are fixed; only the hint moves. `shell_layout`
+spans it across the space below the row — called from `WM_SIZE`, and once at create-time — and
+the static's `SS_CENTER | SS_CENTERIMAGE` centres the text in both axes. `WM_CTLCOLORSTATIC`
+returns `NULL_BRUSH` with `TRANSPARENT` text mode, so the hint shows the window background rather
+than a grey box. The hint is an addition beyond the Win11 reference — it advertises the `Alt+N`
+accelerator from `keys.asm`.
+
 ## Gotchas
 
 - **A bitmap lives in one DC at a time.** The scratch DIB is selected into a memory DC while
@@ -46,6 +57,11 @@ stored in `App.mode` or `App.delay`.
 - **`fMask`, not `mask`.** `MASK` is a MASM operator, so the `COMBOBOXEXITEMW` field is renamed.
 - **Colour values.** GDI takes `COLORREF` (`0x00BBGGRR`) and the DIB memory is little-endian
   BGRA. Magenta is symmetric, so the key is `0x00FF00FF` either way.
+- **A Static paints its own background.** A `Static` control fills its client from the brush its
+  parent returns to `WM_CTLCOLORSTATIC`, and the default is the button face — which would draw a
+  grey block over the window. Returning `NULL_BRUSH` with `TRANSPARENT` text mode lets the
+  Shell's background show through. Do **not** add `WS_CLIPCHILDREN` to the Shell without changing
+  this: it would stop the parent painting under the static, leaving the hint's area unpainted.
 
 ## See also
 
@@ -53,3 +69,5 @@ stored in `App.mode` or `App.delay`.
 - [`docs/build.md`](build.md) — the build loop and why `comctl32.lib` is linked.
 - [`docs/keyboard.md`](keyboard.md) — `Alt+N`, `Alt+M`, and `Alt+D` and how they reach the controls.
 - `.scratch/asm-snip-build/issues/15-shell-dropdown-icons.md` — the change that added icons.
+- `.scratch/asm-snip-build/issues/18-shell-resize-hint.md` — the change that made the Shell
+  resizable and added the hint.

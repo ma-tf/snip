@@ -82,6 +82,7 @@ Snip ENDS
 IDC_NEW             EQU 1001
 IDC_MODE            EQU 1002
 IDC_DELAY           EQU 1003
+IDC_HINT            EQU 1004    ; the inert hint label below the controls
 
 ; The Editor toolbar (ticket 05; the annotation buttons go live in ticket 06).
 IDC_ED_NEW          EQU 1101

@@ -225,6 +225,8 @@ WS_EX_TOOLWINDOW    EQU 00000080h
 
 BS_PUSHBUTTON       EQU 0
 CBS_DROPDOWNLIST    EQU 3
+SS_CENTER           EQU 00000001h      ; static: centre the text horizontally
+SS_CENTERIMAGE      EQU 00000200h      ; ... and vertically, for a single line
 
 CW_USEDEFAULT       EQU 80000000h
 SW_SHOWDEFAULT      EQU 10
@@ -247,6 +249,7 @@ WM_SIZE             EQU 0005h
 WM_PAINT            EQU 000Fh
 WM_CLOSE            EQU 0010h
 WM_ERASEBKGND       EQU 0014h
+WM_CTLCOLORSTATIC   EQU 0138h          ; a static asks its parent for colours
 WM_DISPLAYCHANGE    EQU 007Eh          ; a monitor was added, removed, or re-scaled
 WM_KEYDOWN          EQU 0100h
 WM_SYSKEYDOWN       EQU 0104h          ; Alt+key; what a combo opens its list on
