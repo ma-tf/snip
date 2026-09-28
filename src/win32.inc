@@ -51,6 +51,10 @@ CloseHandle          PROTO STDCALL :DWORD
 ; user32
 ; ---------------------------------------------------------------------------
 SetProcessDpiAwarenessContext PROTO STDCALL :DWORD
+PostMessageW                  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+; ticket 12: synthesise a genuine Alt+Down; a posted message cannot, because the
+; combo's syskey handler reads real keyboard state. See shell.asm.
+SendInput                     PROTO STDCALL :DWORD, :DWORD, :DWORD
 LoadCursorW                   PROTO STDCALL :DWORD, :DWORD
 RegisterClassExW              PROTO STDCALL :DWORD
 CreateWindowExW               PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD, :DWORD, :DWORD, :DWORD
@@ -245,6 +249,7 @@ WM_CLOSE            EQU 0010h
 WM_ERASEBKGND       EQU 0014h
 WM_DISPLAYCHANGE    EQU 007Eh          ; a monitor was added, removed, or re-scaled
 WM_KEYDOWN          EQU 0100h
+WM_SYSKEYDOWN       EQU 0104h          ; Alt+key; what a combo opens its list on
 WM_MOUSEMOVE        EQU 0200h
 WM_LBUTTONDOWN      EQU 0201h
 WM_LBUTTONUP        EQU 0202h
@@ -263,7 +268,7 @@ BM_SETSTATE         EQU 00F3h          ; show a push button in the pressed state
 
 CB_GETCURSEL        EQU 0147h
 CB_SETCURSEL        EQU 014Eh
-CB_SHOWDROPDOWN     EQU 014Fh           ; ticket 12: Alt+M / Alt+D drop the list
+CB_SHOWDROPDOWN     EQU 014Fh           ; NOT honoured by ComboBoxEx32; see shell.asm
 
 ; ComboBoxEx (comctl32). CBEM_* are WM_USER-relative; ICC registers the class.
 WM_USER             EQU 0400h
@@ -319,6 +324,11 @@ DWM_CLOAKED         EQU 14             ; DWMWA_CLOAKED
 GWLP_USERDATA       EQU -21
 
 VK_ESCAPE           EQU 1Bh
+VK_MENU             EQU 12h            ; Alt
+VK_DOWN             EQU 28h            ; ticket 12: Alt+Down opens a focused combo
+; SendInput (ticket 12): the input record kinds and their flags.
+INPUT_KEYBOARD      EQU 1
+KEYEVENTF_KEYUP     EQU 0002h
 
 ; ticket 12: ACCEL fVirt flags (winuser.h) and the ids IsDialogMessageW emits
 ; for Enter and Escape. IDOK/IDCANCEL are deliberately ignored by both WndProcs
@@ -442,6 +452,41 @@ ACCEL STRUCT
     cmd     WORD ?
 ACCEL ENDS                             ; sizeof == 6
 .ERRNZ SIZEOF ACCEL - 6
+
+; KEYBDINPUT / MOUSEINPUT / HARDWAREINPUT and the INPUT union (winuser.h) on x86.
+; INPUT is 28 bytes: a 4-byte type, then the 24-byte widest member (MOUSEINPUT),
+; so the union is sized by MOUSEINPUT and KEYBDINPUT sits inside it. Only the
+; keyboard member is used (ticket 12), but all three are declared so SIZEOF INPUT
+; is the API's 28 rather than an under-sized guess.
+KEYBDINPUT STRUCT
+    wVk         WORD ?
+    wScan       WORD ?
+    dwFlags     DWORD ?
+    time        DWORD ?
+    dwExtraInfo DWORD ?
+KEYBDINPUT ENDS                        ; sizeof == 16
+
+MOUSEINPUT STRUCT
+    _dx         SDWORD ?                ; `dx` is a register name; MASM rejects it
+    _dy         SDWORD ?
+    mouseData   DWORD ?
+    dwFlags     DWORD ?
+    time        DWORD ?
+    dwExtraInfo DWORD ?
+MOUSEINPUT ENDS                        ; sizeof == 24
+
+HARDWAREINPUT STRUCT
+    uMsg        DWORD ?
+    wParamL     WORD ?
+    wParamH     WORD ?
+HARDWAREINPUT ENDS                     ; sizeof == 8
+
+INPUT STRUCT
+    type_       DWORD ?                ; `type` is a MASM reserved word's cousin
+    ki          KEYBDINPUT <>
+    pad         BYTE (24 - SIZEOF KEYBDINPUT) DUP(?)   ; fill the union to MOUSEINPUT
+INPUT ENDS                             ; sizeof == 28
+.ERRNZ SIZEOF INPUT - 28
 
 BITMAPINFOHEADER STRUCT
     biSize          DWORD ?

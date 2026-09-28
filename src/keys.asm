@@ -64,6 +64,12 @@ accel_editor_h DWORD ?
 ; InitCommonControlsEx fails. The caller ignores the return.
 ; ---------------------------------------------------------------------------
 keys_init PROC
+    ; Explicitly zero first: .data? is loader-zeroed already, but a null table
+    ; handle must stay null if CreateAcceleratorTableW fails, so keys_free and
+    ; TranslateAcceleratorW never see a garbage handle.
+    mov  accel_shell_h, 0
+    mov  accel_editor_h, 0
+
     INVOKE CreateAcceleratorTableW, OFFSET accel_shell, accel_shell_n
     mov  accel_shell_h, eax
     INVOKE CreateAcceleratorTableW, OFFSET accel_editor, accel_editor_n

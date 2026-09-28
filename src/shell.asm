@@ -82,6 +82,7 @@ pts_hand_h    POINT <8,8>, <11,10>                ; clock: hour hand out
 shell_wc      WNDCLASSEXW <>
 shell_icons   DWORD ?            ; HIMAGELIST, ours to destroy. Module-private
                                  ; because the Shell is a singleton.
+sfc_in        INPUT 4 DUP(<>)    ; ticket 12: the Alt+Down SendInput batch
 
 SHELL_STYLE   EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX
 
@@ -251,15 +252,48 @@ shell_wndproc ENDP
 
 ; ---------------------------------------------------------------------------
 ; shell_focus_combo(hwnd, id) -> eax 0. Alt+M / Alt+D (ticket 12): put focus in
-; the drop-down named by id, then drop its list. CB_SHOWDROPDOWN is sent to the
-; control, not its list, so no CB_GETCOMBOBOXINFO is needed. GetDlgItem reaches
-; the control by id without the Shell having to remember its handle.
+; the drop-down named by id, then drop its list.
+;
+; Opening the list of a ComboBoxEx32 needs a *real* Alt+Down. Three other routes
+; were tried against the running app and all failed silently:
+;
+;   - CB_SHOWDROPDOWN:  the Ex control does not honour the base class's message.
+;   - CB_GETCOMBOBOXINFO: fails on the Ex control, so the inner combo is not
+;                       reachable that way either.
+;   - WM_KEYDOWN/VK_DOWN: a bare Down navigates a list that is already open; on a
+;                       closed CBS_DROPDOWNLIST it does not open one.
+;
+; What does work (verified by hand) is Alt+Down, and the reason a synthesised
+; message cannot imitate it is that the combo's WM_SYSKEYDOWN handler opens or
+; closes the list "depending on which arrow key the user pressed" - it reads real
+; keyboard state. SendInput is therefore the only faithful way: it makes the OS
+; generate the keystroke with correct state, which is what the user pressed.
+;
+; The control is focused first so the keystroke lands on it, and the input is
+; sent with SendInput rather than PostMessage because only the former produces
+; genuine keyboard state. The Alt press/release is scoped to VK_MENU so no other
+; window sees a stuck modifier.
 ; ---------------------------------------------------------------------------
-shell_focus_combo PROC hwnd:DWORD, id:DWORD
+shell_focus_combo PROC USES esi hwnd:DWORD, id:DWORD
     INVOKE GetDlgItem, hwnd, id
-    mov  edx, eax
-    INVOKE SetFocus, edx
-    INVOKE SendMessageW, edx, CB_SHOWDROPDOWN, 1, 0
+    mov  esi, eax
+    test eax, eax
+    jz   sfc_done
+    INVOKE SetFocus, esi
+
+    ; Alt down, Down down, Down up, Alt up - one SendInput batch.
+    mov  sfc_in[0 * SIZEOF INPUT].type_, INPUT_KEYBOARD
+    mov  sfc_in[0 * SIZEOF INPUT].ki.wVk, VK_MENU
+    mov  sfc_in[1 * SIZEOF INPUT].type_, INPUT_KEYBOARD
+    mov  sfc_in[1 * SIZEOF INPUT].ki.wVk, VK_DOWN
+    mov  sfc_in[2 * SIZEOF INPUT].type_, INPUT_KEYBOARD
+    mov  sfc_in[2 * SIZEOF INPUT].ki.wVk, VK_DOWN
+    mov  sfc_in[2 * SIZEOF INPUT].ki.dwFlags, KEYEVENTF_KEYUP
+    mov  sfc_in[3 * SIZEOF INPUT].type_, INPUT_KEYBOARD
+    mov  sfc_in[3 * SIZEOF INPUT].ki.wVk, VK_MENU
+    mov  sfc_in[3 * SIZEOF INPUT].ki.dwFlags, KEYEVENTF_KEYUP
+    INVOKE SendInput, 4, OFFSET sfc_in, SIZEOF INPUT
+sfc_done:
     xor  eax, eax
     ret
 shell_focus_combo ENDP

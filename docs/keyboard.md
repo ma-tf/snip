@@ -80,8 +80,23 @@ window's `Esc`, and traversal there would be meaningless.
   `TranslateAcceleratorW` matches those, a hand-rolled keydown handler would not.
 - **`keys_translate` returns "consumed".** A 1 means the pump must *not* also
   translate/dispatch the message, or the key press runs the action twice.
-- **`CB_SHOWDROPDOWN` goes to the combo, not its list.** No
-  `CB_GETCOMBOBOXINFO` is needed to drop a `CBS_DROPDOWNLIST` from a shortcut.
+- **A `ComboBoxEx32` only opens on a *real* `Alt+Down`.** Three quieter routes
+  all fail, which is worth knowing before trying them again:
+  - `CB_SHOWDROPDOWN` — the Ex control does not honour the base class's message.
+  - `CB_GETCOMBOBOXINFO` — fails on the Ex control, so the inner combo is not
+    reachable that way either.
+  - `WM_KEYDOWN`/`VK_DOWN` — a bare Down navigates a list that is *already* open;
+    on a closed drop-down list it does not open one.
+  A posted `Alt+Down` fails too: the combo's `WM_SYSKEYDOWN` handler opens or
+  closes the list *depending on which arrow key the user pressed*, so it reads
+  real keyboard state. `shell_focus_combo` therefore focuses the control and
+  plays the keystroke with `SendInput` — the only faithful way to synthesise it.
+- **`INPUT` is 28 bytes on x86, sized by its widest member.** `MOUSEINPUT` is 24
+  bytes and `KEYBDINPUT` is 16, so the union is padded out to the mouse member,
+  not the keyboard one. `win32.inc` spells the fill and guards it with
+  `.ERRNZ SIZEOF INPUT - 28`. Two MASM traps live here: `type` is a reserved
+  word (so the field is `type_`) and `dx` is a register (so `MOUSEINPUT` uses
+  `_dx`).
 - **`Ctrl+Z` is reference-verified, not documented.** Microsoft's published
   shortcut table does not list undo in the Editor; investigating the shipping app
   showed `Ctrl+Z` undoes Pen and Highlighter strokes. We bind it, but our
