@@ -12,7 +12,9 @@
 !tools/crinkler.exe
 
 # Build directories
-build/
+build/*
+# ... except the packed size build: the shipped, Crinkler-compressed exe.
+!build/snip.exe
 out/
 bin/
 

@@ -21,7 +21,7 @@ about it. The x86 target itself is explained in
 | Path            | What it holds                                                     |
 | --------------- | ----------------------------------------------------------------- |
 | `src/`          | Assembly sources and includes: `snip.asm` (entry), `shell.asm`, and the shared `snip.inc` / `win32.inc`. New area modules join the build by landing here. |
-| `build/`        | Build outputs. `snip.exe` and the `*.obj` intermediates, plus `snip.pdb` in the debug variant; `objs.rsp` is deleted after a successful build. Gitignored. |
+| `build/`        | Build outputs. `snip.exe` and the `*.obj` intermediates, plus `snip.pdb` in the debug variant; `objs.rsp` is deleted after a successful build. All gitignored **except** `build/snip.exe`, which is committed as the shipped size build. |
 | `tools/`        | The vendored Crinkler executable and its licence.                  |
 | `build.cmd`     | The build loop.                                                   |
 
@@ -37,13 +37,18 @@ Two variants, both writing `build\snip.exe`, so the run path never changes:
 
 | Variant         | Linked by      | Output                     | Size      |
 | --------------- | -------------- | -------------------------- | --------- |
-| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 18,432 B  |
-| `size`          | Crinkler 3.0b  | `snip.exe`                 | 5,739 B   |
+| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 29,184 B  |
+| `size`          | Crinkler 3.0b  | `snip.exe`                 | 8,906 B   |
 
 The `size` variant is not "the debug build with the PDB removed" — it is a different linker.
 Crinkler resolves DLL imports by hash (four bytes each, instead of a full import table) and
-compresses the image behind a self-extracting stub, which is where the other ~4 KB goes.
-`build.cmd size clean` cleans first and then builds; a bare `build.cmd clean` only cleans.
+compresses the image behind a self-extracting stub. `build.cmd size clean` cleans first and then
+builds; a bare `build.cmd clean` only cleans.
+
+**The `size` exe is committed.** `.gitignore` ignores `build/` but re-includes `build/snip.exe`,
+so the Crinkler-compressed binary is tracked as the shipping artifact. Because both variants
+write the same path, a later `debug` build overwrites the tracked copy with the larger,
+symbol-carrying exe; run `build.cmd size` to restore the packed one before committing.
 
 Under the hood:
 
@@ -127,8 +132,8 @@ Snip (ticket 03). The Editor carries a toolbar whose New, Copy, and Save are liv
 and Save writes a PNG through the standard dialog — both encoded by WIC straight from the
 DIB. Pen, Highlighter, Eraser, and Undo are live too (ticket 06): strokes are held as a
 command log and replayed onto the Working bitmap with GDI+, the Eraser removes whole strokes,
-and Undo reverses the last operation. Sizes: `debug` **18,432 B** plus `snip.pdb`; `size`
-(Crinkler) **5,739 B**.
+and Undo reverses the last operation. Sizes: `debug` **29,184 B** plus `snip.pdb`; `size`
+(Crinkler) **8,906 B**.
 
 ## Debugging
 
@@ -174,7 +179,7 @@ and no `PROC FRAME`/`.pushreg`/`.allocstack` boilerplate. Structured exceptions 
   it to rebase under ASLR. That is normal for this target and no longer something to chase.
 - `ml` prints `Assembling: <path>` to stdout even with `/nologo`.
 - **Antivirus is an active hazard.** Windows Defender removed the Crinkler `TINYHEADER` output
-  within a second of it being written. The current `size` output (5,739 B, no TINYHEADER)
+  within a second of it being written. The current `size` output (8,906 B, no TINYHEADER)
   survived and ran, but Crinkler output is a documented false-positive magnet. If a build
   silently produces no `snip.exe`, check Defender's protection history before debugging the
   build.
