@@ -37,8 +37,8 @@ Two variants, both writing `build\snip.exe`, so the run path never changes:
 
 | Variant         | Linked by      | Output                     | Size      |
 | --------------- | -------------- | -------------------------- | --------- |
-| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 29,184 B  |
-| `size`          | Crinkler 3.0b  | `snip.exe`                 | 8,906 B   |
+| `debug` (default) | `link /debug` | `snip.exe` + `snip.pdb`    | 29,696 B  |
+| `size`          | Crinkler 3.0b  | `snip.exe`                 | 9,017 B   |
 
 The `size` variant is not "the debug build with the PDB removed" — it is a different linker.
 Crinkler resolves DLL imports by hash (four bytes each, instead of a full import table) and
@@ -132,8 +132,8 @@ Snip (ticket 03). The Editor carries a toolbar whose New, Copy, and Save are liv
 and Save writes a PNG through the standard dialog — both encoded by WIC straight from the
 DIB. Pen, Highlighter, Eraser, and Undo are live too (ticket 06): strokes are held as a
 command log and replayed onto the Working bitmap with GDI+, the Eraser removes whole strokes,
-and Undo reverses the last operation. Sizes: `debug` **29,184 B** plus `snip.pdb`; `size`
-(Crinkler) **8,906 B**.
+and Undo reverses the last operation. Sizes: `debug` **29,696 B** plus `snip.pdb`; `size`
+(Crinkler) **9,017 B**.
 
 ## Debugging
 
@@ -179,7 +179,7 @@ and no `PROC FRAME`/`.pushreg`/`.allocstack` boilerplate. Structured exceptions 
   it to rebase under ASLR. That is normal for this target and no longer something to chase.
 - `ml` prints `Assembling: <path>` to stdout even with `/nologo`.
 - **Antivirus is an active hazard.** Windows Defender removed the Crinkler `TINYHEADER` output
-  within a second of it being written. The current `size` output (8,906 B, no TINYHEADER)
+  within a second of it being written. The current `size` output (9,017 B, no TINYHEADER)
   survived and ran, but Crinkler output is a documented false-positive magnet. If a build
   silently produces no `snip.exe`, check Defender's protection history before debugging the
   build.

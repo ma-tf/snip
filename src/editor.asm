@@ -189,7 +189,8 @@ editor_create PROC USES ebx app:DWORD
     mov  ed_wc.cbWndExtra, 0
     mov  eax, [ebx].App.hInstance
     mov  ed_wc.hInstance, eax
-    mov  ed_wc.hbrBackground, COLOR_WINDOW_1
+    INVOKE theme_bg_brush
+    mov  ed_wc.hbrBackground, eax
 
     INVOKE LoadCursorW, 0, IDC_ARROW
     mov  ed_wc.hCursor, eax
@@ -220,6 +221,9 @@ editor_on_create PROC USES ebx esi edi hwnd:DWORD, app:DWORD
 
     mov  ebx, hwnd
     mov  esi, app
+
+    ; Rounded frame, themed title bar, dark common-control theme.
+    INVOKE theme_apply, ebx
 
     INVOKE GetStockObject, DEFAULT_GUI_FONT
     mov  font, eax
@@ -750,6 +754,7 @@ editor_do_paint PROC USES ebx esi edi hwnd:DWORD
     LOCAL memdc:DWORD
     LOCAL clientW:DWORD
     LOCAL clientH:DWORD
+    LOCAL hbr:DWORD
 
     INVOKE BeginPaint, hwnd, ADDR ps
     mov  esi, eax                    ; the paint DC
@@ -777,14 +782,18 @@ ep_have:
     ; this is what paints the gaps between the controls.
     INVOKE GetClientRect, hwnd, ADDR rc
     mov  rc.bottom, ED_TOOLBAR_H
-    INVOKE FillRect, memdc, ADDR rc, COLOR_BTNFACE_1
+    INVOKE theme_face_brush
+    mov  hbr, eax
+    INVOKE FillRect, memdc, ADDR rc, hbr
 
     ; Everything below the toolbar is the Snip's backdrop. A free-form Snip is
     ; not opaque, so the transparent region must reveal a defined colour rather
     ; than stale pixels.
     INVOKE GetClientRect, hwnd, ADDR rc
     mov  rc.top, ED_TOOLBAR_H
-    INVOKE FillRect, memdc, ADDR rc, COLOR_WINDOW_1
+    INVOKE theme_bg_brush
+    mov  hbr, eax
+    INVOKE FillRect, memdc, ADDR rc, hbr
 
     INVOKE dib_snip
     mov  ebx, eax

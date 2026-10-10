@@ -117,6 +117,18 @@ MODE_FREE           EQU 3
 ; ---------------------------------------------------------------------------
 shell_create PROTO STDCALL :DWORD   ; HWND shell_create(App *app) - see shell.asm
 
+; theme.asm - the system light/dark theme and the Fluent window chrome. theme_init
+; runs once from snip.asm before any window exists; theme_apply dresses a
+; top-level window with a rounded frame and a themed title bar. The accessors
+; hand back the palette the window classes and the paint paths draw with. A
+; failure anywhere leaves the light palette and no chrome, so it never blocks
+; startup. See docs/theme.md.
+theme_init       PROTO STDCALL                      ; void theme_init(void)
+theme_apply      PROTO STDCALL :DWORD               ; void theme_apply(HWND hwnd)
+theme_bg_brush   PROTO STDCALL                      ; HBRUSH theme_bg_brush(void) - client background
+theme_face_brush PROTO STDCALL                      ; HBRUSH theme_face_brush(void) - toolbar / surface
+theme_hint_color PROTO STDCALL                      ; COLORREF theme_hint_color(void) - secondary text
+
 ; keys.asm - the keyboard map: the accelerator tables and their routing. It
 ; owns no actions; a matched key becomes a WM_COMMAND carrying an IDA_* id,
 ; which shell.asm or editor.asm handles. keys_init is called once from snip.asm;

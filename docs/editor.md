@@ -45,6 +45,14 @@ bicubic filter when it is scaling down. This keeps GDI+'s alpha handling, so a
 free-form cut still shows its shape. The letterbox around a small image is the
 existing backdrop fill.
 
+**The toolbar strip and the backdrop follow the system theme.** `editor_do_paint`
+fills the toolbar strip from `theme_face_brush` and the image backdrop (the
+letterbox, and the transparent region of a free-form Snip) from `theme_bg_brush`,
+and the window class background is the same `theme_bg_brush`. On a dark system
+those are Fluent's `#2B2B2B` and `#202020`; on a light one they are the
+`COLOR_BTNFACE_1` / `COLOR_WINDOW_1` the Editor always used. See
+[`docs/theme.md`](theme.md).
+
 **The window is resizable, with a floor.** `ED_STYLE` carries
 `WS_THICKFRAME | WS_MAXIMIZEBOX`; `WM_GETMINMAXINFO` asks `DefWindowProc` for the
 normal limits and then raises the minimum to the toolbar width plus a strip of
@@ -99,6 +107,7 @@ while drawing and then thin once committed.
 ## See also
 
 - [`docs/capture.md`](capture.md) — the Snip, its Pristine twin, and the Editor's creation.
+- [`docs/theme.md`](theme.md) — the toolbar strip and backdrop colours, and the window chrome.
 - [`docs/ink.md`](ink.md) — the annotation model the mouse feeds.
 - [`docs/keyboard.md`](keyboard.md) — Tab traversal and the Copy, Save, and Undo shortcuts.
 - [`docs/multimonitor.md`](multimonitor.md) — the work-area clamp and DPI.

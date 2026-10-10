@@ -46,6 +46,11 @@ WinMainASM PROC
     ; ticket inherits this. A failure (already set elsewhere, say) is not fatal.
     INVOKE SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
 
+    ; The system light/dark theme and the Fluent window chrome. Runs before any
+    ; window exists: the palette must be ready before the window classes are
+    ; registered. A failure leaves the plain light look.
+    INVOKE theme_init
+
     ; Register ComboBoxEx32 with comctl32, so shell.asm can create it. The
     ; Shell is the only common control the app uses; a failure is not fatal,
     ; the Shell just comes up without icons.

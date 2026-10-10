@@ -102,7 +102,6 @@ SHELL_MINW       EQU 404         ; client width of the control row plus margins
 SHELL_MINH       EQU 120         ; the control row and a line of hint
 SHELL_DEFW       EQU 440         ; a little slack over the minimum
 SHELL_DEFH       EQU 180
-SHELL_HINT_COLOR EQU 00808080h   ; COLORREF grey: the hint is secondary
 
 ; ---------------------------------------------------------------------------
 .code
@@ -122,7 +121,8 @@ shell_create PROC USES ebx app:DWORD
     mov  shell_wc.cbWndExtra, 0
     mov  eax, [ebx].App.hInstance
     mov  shell_wc.hInstance, eax
-    mov  shell_wc.hbrBackground, COLOR_WINDOW_1
+    INVOKE theme_bg_brush
+    mov  shell_wc.hbrBackground, eax
 
     INVOKE LoadCursorW, 0, IDC_ARROW
     mov  shell_wc.hCursor, eax
@@ -217,7 +217,8 @@ wm_ctlcolor:
     ; The hint shows the window background through it: transparent text and no
     ; background fill from the static. wParam is the static's HDC.
     INVOKE SetBkMode, wParam, TRANSPARENT_BK
-    INVOKE SetTextColor, wParam, SHELL_HINT_COLOR
+    INVOKE theme_hint_color
+    INVOKE SetTextColor, wParam, eax
     INVOKE GetStockObject, NULL_BRUSH
     ret
 
@@ -367,6 +368,9 @@ shell_on_create PROC USES ebx esi hwnd:DWORD, app:DWORD
 
     mov  ebx, hwnd
     mov  esi, app
+
+    ; Rounded frame, themed title bar, dark common-control theme.
+    INVOKE theme_apply, ebx
 
     INVOKE GetStockObject, DEFAULT_GUI_FONT
     mov  font, eax

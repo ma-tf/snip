@@ -25,6 +25,13 @@ The control IDs come from `src/snip.inc`; every Win32 binding it uses is in `src
 beside each item. The class is registered at process init in `snip.asm` with
 `InitCommonControlsEx(ICC_USEREX_CLASSES)`.
 
+**The window follows the system theme; the controls do not.** `shell_on_create` calls
+`theme_apply` for the rounded frame and the themed title bar, and the class background and the
+hint colour come from `theme.asm`'s palette (`theme_bg_brush`, `theme_hint_color`), so the client
+and the hint go dark on a dark system. The three stock controls stay light in both themes: a dark
+common control needs comctl32 v6, which needs a startup manifest the build cannot ship. See
+[`docs/theme.md`](theme.md) and [ADR-0003](adr/0003-theme-chrome-only.md).
+
 **Icons are drawn, not loaded.** There is no `.rsrc` section and no resource compiler.
 `shell_make_icons` builds one 16×16, 24-bit masked `HIMAGELIST` and draws the five glyphs —
 rectangle, window, full-screen brackets, freeform squiggle, clock — with GDI into a scratch
@@ -40,8 +47,8 @@ line of hint (a client of 404×120). The controls are fixed; only the hint moves
 spans it across the space below the row — called from `WM_SIZE`, and once at create-time — and
 the static's `SS_CENTER | SS_CENTERIMAGE` centres the text in both axes. `WM_CTLCOLORSTATIC`
 returns `NULL_BRUSH` with `TRANSPARENT` text mode, so the hint shows the window background rather
-than a grey box. The hint is an addition beyond the Win11 reference — it advertises the `Alt+N`
-accelerator from `keys.asm`.
+than a grey box; its colour is `theme_hint_color` (grey on light, lighter grey on dark). The hint
+is an addition beyond the Win11 reference — it advertises the `Alt+N` accelerator from `keys.asm`.
 
 ## Gotchas
 
@@ -62,12 +69,18 @@ accelerator from `keys.asm`.
   grey block over the window. Returning `NULL_BRUSH` with `TRANSPARENT` text mode lets the
   Shell's background show through. Do **not** add `WS_CLIPCHILDREN` to the Shell without changing
   this: it would stop the parent painting under the static, leaving the hint's area unpainted.
+- **The New button and the two drop-downs stay light on a dark system.** They are comctl32 v5
+  controls, and a dark control needs v6 — which needs a startup manifest the build cannot ship.
+  The window frame, client, and hint go dark; the controls do not. Do not try to fix this with
+  `SetWindowTheme`; see [`docs/theme.md`](theme.md) and [ADR-0003](adr/0003-theme-chrome-only.md).
 
 ## See also
 
 - [`docs/architecture.md`](architecture.md) — the explainer template and module layout.
+- [`docs/theme.md`](theme.md) — the system light/dark theme and the window chrome.
 - [`docs/build.md`](build.md) — the build loop and why `comctl32.lib` is linked.
 - [`docs/keyboard.md`](keyboard.md) — `Alt+N`, `Alt+M`, and `Alt+D` and how they reach the controls.
 - `.scratch/asm-snip-build/issues/15-shell-dropdown-icons.md` — the change that added icons.
 - `.scratch/asm-snip-build/issues/18-shell-resize-hint.md` — the change that made the Shell
   resizable and added the hint.
+- `.scratch/asm-snip-build/issues/19-system-theme-chrome.md` — the change that added the theme.

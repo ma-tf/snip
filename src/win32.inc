@@ -143,6 +143,7 @@ CreateCompatibleDC PROTO STDCALL :DWORD
 CreateCompatibleBitmap PROTO STDCALL :DWORD, :SDWORD, :SDWORD
 CreateDIBSection   PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 CreatePen          PROTO STDCALL :SDWORD, :SDWORD, :DWORD
+CreateSolidBrush   PROTO STDCALL :DWORD   ; the dark palette's background brushes
 SelectObject       PROTO STDCALL :DWORD, :DWORD
 DeleteObject       PROTO STDCALL :DWORD
 DeleteDC           PROTO STDCALL :DWORD
@@ -391,6 +392,18 @@ FillModeWinding          EQU 1            ; nonzero fill: a self-crossing loop f
 FlushIntentionSync       EQU 1            ; GdipFlush: drain batched rendering now
 PixelFormat32bppARGB     EQU 0026200Ah    ; straight alpha, GDI+ canonical
 InterpolationModeHighQualityBicubic EQU 6 ; the downscale filter for a fitted Snip
+
+; --- theme.asm: Fluent window chrome and the system theme ------------------
+; DWM attributes (dwmapi.h). Only the Win11 index for immersive dark mode is
+; used; the app targets Windows 11, so the pre-20H1 index 19 is not called.
+DWMWA_USE_IMMERSIVE_DARK_MODE EQU 20
+DWMWA_WINDOW_CORNER_PREFERENCE EQU 33
+DWMWCP_ROUND                   EQU 2
+; uxtheme's ShouldSystemUseDarkMode is undocumented and exported by ordinal
+; only. Its sibling, ShouldAppsUseDarkMode (132), returns 0 in the app, and the
+; HKCU AppsUseLightTheme read returns ERROR_NOACCESS from this image; see
+; docs/theme.md and ADR-0003.
+UXTHEME_ORD_SHOULD_SYSTEM_USE_DARK_MODE EQU 138
 
 ; ---------------------------------------------------------------------------
 ; Structures (exact x86 layouts from the SDK headers)

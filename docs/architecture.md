@@ -23,8 +23,8 @@ The eventual areas, in the order the spec names them: `snip` (entry and process 
 `encode`. Ticket 06 added an eleventh, `ink` — the annotation engine, kept out of `editor` so
 the command log and the window chrome change for their own reasons. **Landed so far:** `snip`,
 `shell`, `geometry`, `capture`, `dib`, `overlay`, `select`, `editor`, `encode`, `ink`, and now
-`mask` (ticket 07), and `err` (ticket 11). Modules land as their tickets do; the build has no
-list to update.
+`mask` (ticket 07), `err` (ticket 11), and `theme` (ticket 19). Modules land as their tickets do;
+the build has no list to update.
 
 ## Where it lives
 
@@ -73,6 +73,15 @@ window's own chrome (its class, its last menu position) may live module-private.
 the controls are built in `WM_CREATE`, where `lpCreateParams` arrives inside `CREATESTRUCTW`.
 The Shell's drop-downs are `ComboBoxEx32` (comctl32, icons drawn at runtime); that detail and
 its gotchas live in [`docs/shell.md`](shell.md).
+
+**The window follows the system theme; the controls do not.** `theme.asm` asks uxtheme's
+`ShouldSystemUseDarkMode` (ordinal 138) once at startup, picks one of two hardcoded palettes, and
+dresses each top-level window with DWM rounded corners and a themed title bar. Only the chrome and
+the surfaces the app draws itself (the client, the Editor's toolbar strip, the Shell's hint) change
+with the theme; the stock controls stay light, because a dark common control needs comctl32 v6 and
+its startup manifest, which the single-exe Crinkler build cannot carry. See
+[`docs/theme.md`](theme.md) and
+[ADR-0003](adr/0003-theme-chrome-only.md).
 
 **The Overlay is a surface, the Selection is the behaviour.** `overlay.asm` owns the window,
 the premultiplied DIB, and the chrome; `select.asm` owns the session state machine and the
@@ -186,6 +195,7 @@ the linked build small and the Crinkler `size` build smaller still; see
 - [Copy and Save As](encode.md) — WIC encoding, the clipboard formats, and the Save dialog.
 - [Ink](ink.md) — the annotation model, the command log, and the Eraser and Undo.
 - [Errors](errors.md) — the message-box error surface and which failures are fatal.
+- [The theme](theme.md) — the system light/dark follow, the palette, and the window chrome.
 - [DPI and multi-monitor](multimonitor.md) — coordinate spaces, the re-read rules, and the
   Overlay's DPI-scaled chrome.
 - [`CONTEXT.md`](../CONTEXT.md) — the vocabulary the code and the tickets share.
