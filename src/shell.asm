@@ -98,7 +98,7 @@ shell_theme   DWORD ?            ; the theme flag this window last drew (live up
 SHELL_STYLE      EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX OR WS_MAXIMIZEBOX OR WS_THICKFRAME
 
 SHELL_MARGIN     EQU 12          ; inset of the control row and the hint
-SHELL_ROW_BOTTOM EQU 44          ; below the 26px control row that starts at y=12
+SHELL_ROW_BOTTOM EQU 46          ; below the 28px control row that starts at y=12
 SHELL_MINW       EQU 404         ; client width of the control row plus margins
 SHELL_MINH       EQU 120         ; the control row and a line of hint
 SHELL_DEFW       EQU 440         ; a little slack over the minimum
@@ -170,6 +170,8 @@ shell_wndproc PROC hwnd:DWORD, msg:DWORD, wParam:DWORD, lParam:DWORD
     je   wm_ctlcolor
     cmp  eax, WM_COMMAND
     je   wm_command
+    cmp  eax, WM_DRAWITEM
+    je   wm_drawitem
     cmp  eax, WM_SETTINGCHANGE
     je   wm_settingchange
     cmp  eax, WM_DESTROY
@@ -324,6 +326,13 @@ wm_settingchange_done:
     xor  eax, eax
     ret
 
+; A control asked to be painted. ui.asm owns the look; wParam is the control id
+; (which the skin does not need) and lParam is the DRAWITEMSTRUCT.
+wm_drawitem:
+    INVOKE ui_draw_item, hwnd, lParam
+    xor  eax, eax
+    ret
+
 wm_destroy:
     ; The image list is ours, not the controls': destroy it before we quit.
     mov  eax, shell_icons
@@ -411,11 +420,12 @@ shell_on_create PROC USES ebx esi hwnd:DWORD, app:DWORD
     INVOKE shell_make_icons
     mov  shell_icons, eax
 
-    ; --- New button: 12,12 64x26, id IDC_NEW --------------------------------
+    ; --- New button: 12,12 64x28, id IDC_NEW --------------------------------
+    ; BS_OWNERDRAW: ui.asm paints it, a plain button with a leading "+" and label.
     mov  edx, [esi].App.hInstance
-    INVOKE CreateWindowExW, 0, OFFSET cls_button, OFFSET text_new, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 12, 12, 64, 26, ebx, IDC_NEW, edx, 0
+    INVOKE CreateWindowExW, 0, OFFSET cls_button, OFFSET text_new, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_OWNERDRAW, 12, 12, 64, 28, ebx, IDC_NEW, edx, 0
     mov  hCtl, eax
-    INVOKE SendMessageW, hCtl, WM_SETFONT, font, 1
+    INVOKE ui_attach, hCtl, UI_KIND_BUTTON_GLYPH, UI_AMBIENT_BG
 
     ; --- mode drop-down: 84,12 150x100, id IDC_MODE -------------------------
     mov  edx, [esi].App.hInstance

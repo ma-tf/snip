@@ -20,6 +20,7 @@ WIN32_INC EQU 1
 ; kernel32
 ; ---------------------------------------------------------------------------
 GetModuleHandleW PROTO STDCALL :DWORD
+GetWindowsDirectoryW PROTO STDCALL :DWORD, :DWORD   ; ui.asm: locate the icons .ttf
 ExitProcess      PROTO STDCALL :DWORD
 MulDiv           PROTO STDCALL :SDWORD, :SDWORD, :SDWORD   ; rounded scale, for DPI chrome
 LoadLibraryA     PROTO STDCALL :DWORD                      ; resolve the COM entry points
@@ -125,6 +126,7 @@ TranslateAcceleratorW   PROTO STDCALL :DWORD, :DWORD, :DWORD
 IsDialogMessageW        PROTO STDCALL :DWORD, :DWORD
 IsWindowVisible         PROTO STDCALL :DWORD
 GetDlgItem              PROTO STDCALL :DWORD, :SDWORD
+GetWindowTextW          PROTO STDCALL :DWORD, :DWORD, :SDWORD   ; the owner-draw button's label
 
 ; ticket 09: the monitor under the pointer for full-screen mode.
 ; MonitorFromPoint(POINT pt, DWORD flags) also takes the POINT BY VALUE, exactly
@@ -187,6 +189,14 @@ GdipSetPenStartCap   PROTO STDCALL :DWORD, :DWORD
 GdipSetPenEndCap     PROTO STDCALL :DWORD, :DWORD
 GdipSetPenLineJoin   PROTO STDCALL :DWORD, :DWORD
 
+; ui.asm (ticket 02): the rounded Fluent surfaces. A GraphicsPath is built from
+; four arcs and closed; the fill and the hairline border are drawn from it. REAL
+; arguments are passed as their float bits in a DWORD, exactly as ink.asm does.
+GdipAddPathArcI      PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD, :DWORD  ; (path, x, y, w, h, start REAL, sweep REAL)
+GdipClosePathFigure  PROTO STDCALL :DWORD
+GdipFillRectangleI   PROTO STDCALL :DWORD, :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD  ; (gfx, brush, x, y, w, h)
+GdipDrawPath         PROTO STDCALL :DWORD, :DWORD, :DWORD  ; (gfx, pen, path)
+
 ; The free-form cut (ticket 07): a GraphicsPath filled antialiased into a
 ; scratch bitmap whose alpha is the coverage mask, plus image drawing for the
 ; Editor's alpha-aware paint. A path is built from GpPoints (INT x, INT y), the
@@ -206,6 +216,24 @@ GdipDrawImageI       PROTO STDCALL :DWORD, :DWORD, :SDWORD, :SDWORD  ; (gfx, ima
 ; downscale filter.
 GdipDrawImageRectI   PROTO STDCALL :DWORD, :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD  ; (gfx, image, x, y, w, h)
 GdipSetInterpolationMode PROTO STDCALL :DWORD, :DWORD
+
+; ui.asm: the Editor's tool icons are real Segoe Fluent Icons glyphs. The face is
+; read from its .ttf through a private GDI+ collection, because this image's
+; installed-font lookup does not resolve the Segoe families by name (GDI+ status
+; 14, FontFamilyNotFound) even though GDI enumerates them. The family comes from
+; the collection's own family list, so no name lookup is used. DrawString centres
+; the glyph in the button; CreateFont builds it from that family handle.
+GdipNewPrivateFontCollection     PROTO STDCALL :DWORD
+GdipPrivateAddFontFile           PROTO STDCALL :DWORD, :DWORD
+GdipGetFontCollectionFamilyCount PROTO STDCALL :DWORD, :DWORD
+GdipGetFontCollectionFamilyList  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+GdipCreateFont                   PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+GdipDeleteFont                   PROTO STDCALL :DWORD
+GdipCreateStringFormat           PROTO STDCALL :DWORD, :DWORD, :DWORD
+GdipSetStringFormatAlign         PROTO STDCALL :DWORD, :DWORD
+GdipSetStringFormatLineAlign     PROTO STDCALL :DWORD, :DWORD
+GdipDeleteStringFormat           PROTO STDCALL :DWORD
+GdipDrawString                   PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
 ; Window styles and messages (numeric values from the SDK headers)
@@ -227,6 +255,7 @@ WS_EX_TOPMOST       EQU 00000008h
 WS_EX_TOOLWINDOW    EQU 00000080h
 
 BS_PUSHBUTTON       EQU 0
+BS_OWNERDRAW        EQU 0000000Bh      ; the parent paints the button (ui.asm)
 CBS_DROPDOWNLIST    EQU 3
 SS_CENTER           EQU 00000001h      ; static: centre the text horizontally
 SS_CENTERIMAGE      EQU 00000200h      ; ... and vertically, for a single line
@@ -263,6 +292,7 @@ WM_LBUTTONUP        EQU 0202h
 WM_RBUTTONUP        EQU 0205h
 WM_COMMAND          EQU 0111h
 WM_SETFONT          EQU 0030h
+WM_DRAWITEM         EQU 002Bh          ; an owner-draw control asks its parent to paint it
 WM_CAPTURECHANGED   EQU 0215h          ; mouse capture moved; end a drag cleanly
 WM_DPICHANGED       EQU 02E0h          ; the window's effective DPI changed
 WM_GETMINMAXINFO    EQU 0024h          ; the window is asked for its size limits
@@ -272,6 +302,21 @@ SIZE_MINIMIZED      EQU 1              ; WM_SIZE wParam: not a user size choice
 BN_CLICKED          EQU 0
 CBN_SELCHANGE       EQU 1
 BM_SETSTATE         EQU 00F3h          ; show a push button in the pressed state
+
+; Owner-draw (WM_DRAWITEM). CtlType picks the control kind; the ODS_* bits arrive
+; in DRAWITEMSTRUCT.itemState and are what the skin paints from (ui.asm).
+ODT_BUTTON          EQU 4
+ODS_SELECTED        EQU 0001h
+ODS_GRAYED          EQU 0002h
+ODS_DISABLED        EQU 0004h
+ODS_FOCUS           EQU 0010h
+
+; DrawTextW format flags for the button label.
+DT_LEFT             EQU 0000h
+DT_CENTER           EQU 0001h
+DT_VCENTER          EQU 0004h
+DT_SINGLELINE       EQU 0020h
+DT_CALCRECT         EQU 0400h          ; measure only: no output, fills the rect
 
 CB_GETCURSEL        EQU 0147h
 CB_SETCURSEL        EQU 014Eh
@@ -558,6 +603,20 @@ PAINTSTRUCT STRUCT
     rgbReserved BYTE 32 DUP(?)
 PAINTSTRUCT ENDS                       ; sizeof == 64
 
+; DRAWITEMSTRUCT (winuser.h) on x86: five DWORDs, hwndItem, hDC, a RECT, and
+; itemData == 48 bytes. WM_DRAWITEM's lParam points at one; CtlType is ODT_*,
+; itemState carries the ODS_* bits, and hDC is the surface to paint.
+DRAWITEMSTRUCT STRUCT
+    CtlType    DWORD ?
+    CtlID      DWORD ?
+    itemID     DWORD ?
+    itemAction DWORD ?
+    itemState  DWORD ?
+    hwndItem   DWORD ?
+    hDC        DWORD ?
+    rcItem     RECT <>
+    itemData   DWORD ?
+DRAWITEMSTRUCT ENDS                    ; sizeof == 48
 MONITORINFO STRUCT
     cbSize      DWORD ?
     rcMonitor   RECT <>

@@ -59,9 +59,10 @@ editor_wndproc  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 
 ED_STYLE EQU WS_CAPTION OR WS_SYSMENU OR WS_MINIMIZEBOX OR WS_MAXIMIZEBOX OR WS_THICKFRAME OR WS_CLIPCHILDREN
 
-; The toolbar strip and the minimum client width that fits all seven buttons.
-ED_TOOLBAR_H    EQU 32
-ED_TOOLBAR_MINW EQU 456
+; The toolbar strip and the minimum client width that fits the toolbar row
+; (New + six 34px icon buttons, plus a little slack).
+ED_TOOLBAR_H    EQU 36
+ED_TOOLBAR_MINW EQU 292
 
 ; The smallest image area a user may drag the window down to, so there is always
 ; somewhere to annotate.
@@ -81,12 +82,15 @@ ed_title DW 'S','n','i','p','p','i','n','g',' ','T','o','o','l',0
 ed_cls_button DW 'B','u','t','t','o','n',0
 
 btn_new        DW 'N','e','w',0
-btn_save       DW 'S','a','v','e',0
-btn_copy       DW 'C','o','p','y',0
-btn_pen        DW 'P','e','n',0
-btn_hilite     DW 'H','i','g','h','l','i','g','h','t','e','r',0
-btn_eraser     DW 'E','r','a','s','e','r',0
-btn_undo       DW 'U','n','d','o',0
+; The tool buttons carry a Segoe Fluent Icons codepoint as their window text and
+; are drawn by ui.asm's UI_KIND_ICON path with the glyph font: Save, Copy, Pen,
+; Highlighter, Eraser, Undo.
+btn_save       DW 0E74Eh,0
+btn_copy       DW 0E8C8h,0
+btn_pen        DW 0E70Fh,0
+btn_hilite     DW 0E7E6h,0
+btn_eraser     DW 0E75Ch,0
+btn_undo       DW 0E7A7h,0
 
 ; Save As: a PNG filter, a default file name, and a default extension. The
 ; filter is a sequence of null-terminated pairs, ended by an empty string.
@@ -218,7 +222,6 @@ editor_create ENDP
 ; ---------------------------------------------------------------------------
 editor_on_create PROC USES ebx esi edi hwnd:DWORD, app:DWORD
     LOCAL hCtl:DWORD
-    LOCAL font:DWORD
 
     mov  ebx, hwnd
     mov  esi, app
@@ -230,34 +233,28 @@ editor_on_create PROC USES ebx esi edi hwnd:DWORD, app:DWORD
     INVOKE theme_refresh
     mov  ed_theme, eax
 
-    INVOKE GetStockObject, DEFAULT_GUI_FONT
-    mov  font, eax
     mov  edi, [esi].App.hInstance
 
-    ; New
-    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_new, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 4, 4, 52, 24, ebx, IDC_ED_NEW, edi, 0
-    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
-    ; Save
-    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_save, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 60, 4, 56, 24, ebx, IDC_ED_SAVE, edi, 0
-    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
-    ; Copy
-    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_copy, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 120, 4, 56, 24, ebx, IDC_ED_COPY, edi, 0
-    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
-    ; Pen
-    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_pen, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 184, 4, 48, 24, ebx, IDC_ED_PEN, edi, 0
+    ; Every toolbar button is BS_OWNERDRAW: ui.asm paints it on the strip.
+    ; New (a plain button with a leading "+" glyph and its label)
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_new, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_OWNERDRAW, 4, 4, 52, 28, ebx, IDC_ED_NEW, edi, 0
+    INVOKE ui_attach, eax, UI_KIND_BUTTON_GLYPH, UI_AMBIENT_FACE
+    ; Save, Copy, Pen, Highlighter, Eraser, Undo (icon buttons, 34px squares)
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_save, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_OWNERDRAW, 60, 4, 34, 28, ebx, IDC_ED_SAVE, edi, 0
+    INVOKE ui_attach, eax, UI_KIND_ICON, UI_AMBIENT_FACE
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_copy, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_OWNERDRAW, 98, 4, 34, 28, ebx, IDC_ED_COPY, edi, 0
+    INVOKE ui_attach, eax, UI_KIND_ICON, UI_AMBIENT_FACE
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_pen, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_OWNERDRAW, 136, 4, 34, 28, ebx, IDC_ED_PEN, edi, 0
     mov  ed_hwndPen, eax
-    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
-    ; Highlighter
-    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_hilite, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 236, 4, 92, 24, ebx, IDC_ED_HILITE, edi, 0
+    INVOKE ui_attach, eax, UI_KIND_ICON, UI_AMBIENT_FACE
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_hilite, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_OWNERDRAW, 174, 4, 34, 28, ebx, IDC_ED_HILITE, edi, 0
     mov  ed_hwndHilite, eax
-    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
-    ; Eraser
-    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_eraser, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 332, 4, 60, 24, ebx, IDC_ED_ERASER, edi, 0
+    INVOKE ui_attach, eax, UI_KIND_ICON, UI_AMBIENT_FACE
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_eraser, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_OWNERDRAW, 212, 4, 34, 28, ebx, IDC_ED_ERASER, edi, 0
     mov  ed_hwndEraser, eax
-    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
-    ; Undo
-    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_undo, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_PUSHBUTTON, 396, 4, 52, 24, ebx, IDC_ED_UNDO, edi, 0
-    INVOKE SendMessageW, eax, WM_SETFONT, font, 1
+    INVOKE ui_attach, eax, UI_KIND_ICON, UI_AMBIENT_FACE
+    INVOKE CreateWindowExW, 0, OFFSET ed_cls_button, OFFSET btn_undo, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR BS_OWNERDRAW, 250, 4, 34, 28, ebx, IDC_ED_UNDO, edi, 0
+    INVOKE ui_attach, eax, UI_KIND_ICON, UI_AMBIENT_FACE
 
     ; Pen is the tool in hand until another is chosen.
     mov  ed_drag, ED_DRAG_NONE
@@ -895,6 +892,8 @@ editor_wndproc PROC hwnd:DWORD, msg:DWORD, wParam:DWORD, lParam:DWORD
     je   ew_erase
     cmp  eax, WM_COMMAND
     je   ew_command
+    cmp  eax, WM_DRAWITEM
+    je   ew_drawitem
     cmp  eax, WM_LBUTTONDOWN
     je   ew_down
     cmp  eax, WM_MOUSEMOVE
@@ -1018,6 +1017,13 @@ ew_command_click:
 
 ew_default:
     INVOKE DefWindowProcW, hwnd, msg, wParam, lParam
+    ret
+
+; A toolbar button asked to be painted. ui.asm owns the look; lParam is the
+; DRAWITEMSTRUCT.
+ew_drawitem:
+    INVOKE ui_draw_item, hwnd, lParam
+    xor  eax, eax
     ret
 
 ew_new:

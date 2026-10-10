@@ -1,0 +1,1005 @@
+; ui.asm
+; The Fluent control skin: owner-draw for the Shell's and Editor's buttons and
+; drop-downs, so they carry the Windows 11 look and go dark on a dark system
+; without a comctl32 v6 manifest. See docs/ui.md and ADR-0004.
+;
+; This module owns only how our controls are painted and how they react to the
+; mouse. It owns no window and no command: shell.asm and editor.asm keep their
+; controls and their WM_COMMAND handling and hand this module the painting.
+;
+; Ticket 02 paints the buttons. A button is a BS_OWNERDRAW BUTTON; the parent's
+; WM_DRAWITEM routes here, and ui_draw_button lays down the Fluent surface: the
+; ambient background, a rounded 4px rect, a hairline border, then the label. The
+; pressed and disabled looks come from DRAWITEMSTRUCT.itemState, which the button
+; supplies without any subclassing; the hover and focus states (ticket 04)
+; do not. ui_attach records each control's kind and ambient surface, so this
+; module never has to know our control ids.
+;
+; An icon button (UI_KIND_ICON) carries a Segoe Fluent Icons codepoint as its
+; window text. ui_draw_icon renders that codepoint as the real font glyph when
+; the icons .ttf can be loaded; otherwise it falls back to a hand-drawn vector,
+; so a button is never blank. See ui_load_icon_font for why the face is read
+; from the file rather than resolved by name.
+;
+; The accent and the entry-point names come from dwmapi.dll, resolved with
+; LoadLibraryA/GetProcAddress - the Crinkler-safe pattern theme.asm and
+; capture.asm already use, so the build gains no import library. Every step is
+; best-effort: a missing GDI+ falls back to a label-only button.
+
+.386
+.model flat, stdcall
+option casemap:none
+
+include snip.inc
+include win32.inc
+
+PUBLIC ui_init
+PUBLIC ui_attach
+PUBLIC ui_draw_item
+PUBLIC ui_theme_changed
+
+; Forward declarations so INVOKE reaches callees defined later in the file.
+ui_resolve_accent PROTO STDCALL
+ui_argb           PROTO STDCALL :DWORD
+ui_find           PROTO STDCALL :DWORD
+ui_ambient_color  PROTO STDCALL :DWORD
+ui_fill_rect      PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+ui_round_rect     PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+ui_draw_button    PROTO STDCALL :DWORD
+ui_draw_icon      PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+ui_draw_glyph     PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+ui_draw_poly      PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
+ui_load_icon_font PROTO STDCALL
+ui_icon_path      PROTO STDCALL :DWORD
+
+; A GDI+ RectF: four REALs. GdipDrawString takes its layout rect as floats, so
+; ui_draw_icon converts the button's integer rect with the x87.
+RectF STRUCT
+    x DWORD ?
+    y DWORD ?
+    w DWORD ?
+    h DWORD ?
+RectF ENDS
+
+; A registered control: its handle, the drawing kind (UI_KIND_*), and the ambient
+; surface it sits on (UI_AMBIENT_*). Flat and fixed-size; the app has far fewer
+; controls than the cap.
+UiSlot STRUCT
+    hwnd    DWORD ?
+    kind    DWORD ?
+    ambient DWORD ?
+UiSlot ENDS
+UI_MAX_CONTROLS EQU 16
+
+; ---------------------------------------------------------------------------
+; Read-only data. Colour tokens are COLORREF (0x00BBGGRR); ui_argb sets the
+; alpha for GDI+.
+; ---------------------------------------------------------------------------
+.const
+ff_ui          DW 'S','e','g','u','e',' ','U','I',' ','V','a','r','i','a','b','l','e',' ','T','e','x','t',0
+
+dwmapi_dll     DB 'dwmapi.dll',0
+fn_dwmcolor    DB 'DwmGetColorizationColor',0
+
+; The Fluent default accent, #0067C0, when DWM will not report the user's colour.
+ACCENT_FALLBACK EQU 00C06700h
+
+; UI_RADIUS is the Fluent 2 control corner radius, in pixels. PEN_W_1 is a 1.0
+; stroke width; ARCF_* are the arc angles as IEEE-754 float bits (GDI+ REALs).
+UI_RADIUS      EQU 4
+PEN_W_1        EQU 03F800000h
+PEN_W_ICON     EQU 03FC00000h   ; 1.5f: the icon stroke width
+ARCF_0         EQU 000000000h
+ARCF_90        EQU 042B40000h
+ARCF_180       EQU 043340000h
+ARCF_270       EQU 043870000h
+
+; The Editor's tool buttons: their window text is one Segoe Fluent Icons
+; codepoint. ui.asm does not read the icon font - like shell.asm's drop-down
+; glyphs, these icons are drawn, not loaded - so the codepoint selects a vector
+; below. The arrays are on a 16x16 grid, centred by ui_draw_icon.
+ICON_SAVE      EQU 0E74Eh
+ICON_COPY      EQU 0E8C8h
+ICON_PEN       EQU 0E70Fh
+ICON_HILITE    EQU 0E7E6h
+ICON_ERASER    EQU 0E75Ch
+ICON_UNDO      EQU 0E7A7h
+ICON_ADD       EQU 0E710h       ; the "+" that prefixes the Editor's New button
+
+; The icon font. The .ttf is read from the Windows font directory into a private
+; GDI+ collection (ui_load_icon_font); ICON_EM is 16.0f - the same size as the
+; vector grid - and the two files are tried in order: the Windows 11 name first,
+; then the Windows 10 one. GdipDrawString needs REALs, and StringAlignmentCenter
+; centres the glyph in the button.
+ICON_EM        EQU 041800000h   ; 16.0f
+UnitPixel      EQU 2
+SA_CENTER      EQU 1            ; StringAlignmentCenter
+icofile_icons  DW '\','F','o','n','t','s','\','S','e','g','o','e','I','c','o','n','s','.','t','t','f',0
+icofile_mdl2   DW '\','F','o','n','t','s','\','s','e','g','m','d','l','2','.','t','t','f',0
+
+ic_save_a  POINT <2,1>,<14,1>,<14,15>,<2,15>,<2,1>       ; floppy outline
+ic_save_b  POINT <5,1>,<5,5>,<11,5>,<11,1>               ; shutter
+ic_save_c  POINT <4,9>,<12,9>,<12,14>,<4,14>,<4,9>       ; label
+ic_copy_a  POINT <5,2>,<14,2>,<14,12>,<5,12>,<5,2>       ; back sheet
+ic_copy_b  POINT <2,4>,<11,4>,<11,14>,<2,14>,<2,4>       ; front sheet
+ic_pen_a   POINT <12,2>,<4,10>,<2,14>,<3,15>,<6,13>,<14,4>,<12,2>  ; pencil
+ic_hl_a    POINT <4,5>,<13,5>,<13,10>,<4,10>,<4,5>       ; highlighter body
+ic_hl_b    POINT <4,10>,<2,14>,<8,14>,<4,10>             ; chisel tip
+ic_er_a    POINT <3,9>,<8,4>,<14,8>,<9,13>,<3,9>         ; eraser
+ic_undo_a  POINT <5,5>,<5,11>,<8,13>,<11,13>,<14,10>     ; undo curve
+ic_undo_b  POINT <5,5>,<3,7>,<5,9>                       ; undo arrowhead
+
+; Ambient surfaces a control's rounded corners reveal.
+AMB_BG_LIGHT   EQU 00FFFFFFh      ; the Shell's client (#FFFFFF)
+AMB_FACE_LIGHT EQU 00F0F0F0h      ; the Editor's toolbar strip (COLOR_BTNFACE)
+AMB_BG_DARK    EQU 00202020h      ; theme.asm's dark client (#202020)
+AMB_FACE_DARK  EQU 002B2B2Bh      ; theme.asm's dark surface (#2B2B2B)
+
+; Button tokens, light (L) and dark (D).
+SURFACE_LIGHT  EQU 00FDFDFDh
+SURFACE_DARK   EQU 002D2D2Dh
+PRESSED_LIGHT  EQU 00F0F0F0h
+PRESSED_DARK   EQU 00272727h
+BORDER_LIGHT   EQU 00E5E5E5h
+BORDER_DARK    EQU 003A3A3Ah
+TEXT_LIGHT     EQU 001A1A1Ah
+TEXT_DARK      EQU 00FFFFFFh
+WHITE          EQU 00FFFFFFh
+DISABLED_LIGHT EQU 009E9E9Eh
+DISABLED_DARK  EQU 006B6B6Bh
+
+; ---------------------------------------------------------------------------
+; Mutable data. Zero-initialised, so .data? (.bss): no file bytes.
+; ---------------------------------------------------------------------------
+.data?
+ui_ready      DWORD ?          ; GDI+ is up: the skin may draw
+ui_token      DWORD ?          ; the skin's own GdiplusStartup token
+ui_font_gdi   DWORD ?          ; HFONT: the button label, drawn with GDI for ClearType
+ui_accent     DWORD ?          ; COLORREF: the primary button's fill
+ui_iconcoll   DWORD ?          ; GpFontCollection*: the icons .ttf, loaded from file
+ui_iconfamily DWORD ?          ; GpFontFamily*: the icon face, taken from that collection
+ui_iconfont   DWORD ?          ; GpFont*: the icon glyph font, 0 when unavailable
+ui_iconfamarr DWORD 4 DUP(?)   ; scratch: the collection's family list
+ui_fontpath   WORD 260 DUP(?)  ; scratch: %WINDIR%\Fonts\<icons>.ttf
+pfn_DwmGetColorizationColor DWORD ?
+ura_color     DWORD ?          ; scratch: DwmGetColorizationColor's ARGB out
+ura_opaque    DWORD ?          ; scratch: its BOOL opaque-blend out
+ui_slots      UiSlot UI_MAX_CONTROLS DUP(<>)
+ui_ptbuf      POINT 16 DUP(<>)   ; scratch: one icon polyline, translated to the button
+
+.code
+
+; ---------------------------------------------------------------------------
+; ui_init() -> BOOL in eax. Called once from snip.asm before any window exists.
+;
+; Starts GDI+ on its own token (ink.asm keeps its own; GDI+ allows more than one
+; startup pair), then resolves the accent, loads the two font families, and
+; builds the label font. A failure at any step is not fatal: ui_ready stays 0 and
+; the caller's controls fall back to the label-only / classic look.
+; ---------------------------------------------------------------------------
+ui_init PROC
+    LOCAL gsi:GdiplusStartupInput
+
+    mov  ui_ready, 0
+    mov  gsi.GdiplusVersion, 1
+    mov  gsi.DebugEventCallback, 0
+    mov  gsi.SuppressBackgroundThread, 0
+    mov  gsi.SuppressExternalCodecs, 0
+
+    INVOKE GdiplusStartup, OFFSET ui_token, ADDR gsi, 0
+    test eax, eax
+    jnz  ui_init_no
+    mov  ui_ready, 1
+
+    INVOKE ui_resolve_accent
+
+    ; The label font is GDI's: ClearType text is crisper than GDI+'s, and the
+    ; button label is the one place it matters. CreateFontW maps an absent face
+    ; to the closest installed substitute, so an older system still gets text.
+    ; (The icon buttons draw a Segoe Fluent Icons glyph; ui_load_icon_font below
+    ; reads the face from its .ttf, because this image will not resolve it by
+    ; name.)
+    INVOKE CreateFontW, -14, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, OFFSET ff_ui
+    mov  ui_font_gdi, eax
+
+    INVOKE ui_load_icon_font
+
+    mov  eax, 1
+    ret
+ui_init_no:
+    xor  eax, eax
+    ret
+ui_init ENDP
+
+; ---------------------------------------------------------------------------
+; ui_theme_changed() -> void. Called from each window's WM_SETTINGCHANGE handler
+; after theme_refresh. The accent can move with the theme, so it is re-resolved;
+; the controls repaint through the RedrawWindow(... RDW_ALLCHILDREN) the caller
+; already issues. Ticket 05 extends this to the dark control palette (already
+; keyed live off theme_is_dark at draw time).
+; ---------------------------------------------------------------------------
+ui_theme_changed PROC
+    cmp  ui_ready, 0
+    je   utc_done
+    INVOKE ui_resolve_accent
+utc_done:
+    ret
+ui_theme_changed ENDP
+
+; ---------------------------------------------------------------------------
+; ui_attach(control, kind, ambient) -> void. Records a control for the skin:
+; its drawing kind (UI_KIND_*) and the surface it sits on (UI_AMBIENT_*). The
+; control's own style already carries BS_OWNERDRAW / CBS_OWNERDRAWFIXED; the
+; subclassing that adds hover lands in ticket 04. Called from shell_on_create
+; and editor_on_create.
+; ---------------------------------------------------------------------------
+ui_attach PROC USES ebx esi edi control:DWORD, kind:DWORD, ambient:DWORD
+    mov  ebx, control
+    INVOKE ui_find, ebx
+    cmp  eax, -1
+    je   ua_add
+
+    ; Update the existing slot.
+    imul eax, eax, SIZEOF UiSlot
+    add  eax, OFFSET ui_slots
+    mov  [eax].UiSlot.hwnd, ebx
+    mov  ecx, kind
+    mov  [eax].UiSlot.kind, ecx
+    mov  ecx, ambient
+    mov  [eax].UiSlot.ambient, ecx
+    ret
+
+ua_add:
+    mov  ecx, 0
+    mov  edx, OFFSET ui_slots
+ua_scan:
+    cmp  ecx, UI_MAX_CONTROLS
+    jae  ua_done                  ; full: the control simply draws with defaults
+    cmp  [edx].UiSlot.hwnd, 0
+    je   ua_free
+    add  edx, SIZEOF UiSlot
+    inc  ecx
+    jmp  ua_scan
+ua_free:
+    mov  [edx].UiSlot.hwnd, ebx
+    mov  eax, kind
+    mov  [edx].UiSlot.kind, eax
+    mov  eax, ambient
+    mov  [edx].UiSlot.ambient, eax
+ua_done:
+    ret
+ui_attach ENDP
+
+; ---------------------------------------------------------------------------
+; ui_find(control) -> eax = the slot index, or -1. Linear over a tiny table.
+; ---------------------------------------------------------------------------
+ui_find PROC control:DWORD
+    mov  ecx, 0
+    mov  edx, OFFSET ui_slots
+uf_loop:
+    cmp  ecx, UI_MAX_CONTROLS
+    jae  uf_none
+    mov  eax, [edx].UiSlot.hwnd
+    test eax, eax
+    jz   uf_next
+    cmp  eax, control
+    je   uf_hit
+uf_next:
+    add  edx, SIZEOF UiSlot
+    inc  ecx
+    jmp  uf_loop
+uf_hit:
+    mov  eax, ecx
+    ret
+uf_none:
+    mov  eax, -1
+    ret
+ui_find ENDP
+
+; ---------------------------------------------------------------------------
+; ui_draw_item(parent, dis) -> void. The single WM_DRAWITEM entry point, called
+; from shell_wndproc and editor_wndproc. Dispatches on CtlType; buttons now,
+; ComboBox rows in ticket 03.
+; ---------------------------------------------------------------------------
+ui_draw_item PROC USES esi parent:DWORD, dis:DWORD
+    mov  esi, dis
+    test esi, esi
+    jz   udi_done
+    cmp  [esi].DRAWITEMSTRUCT.CtlType, ODT_BUTTON
+    jne  udi_done
+    INVOKE ui_draw_button, esi
+udi_done:
+    xor  eax, eax
+    ret
+ui_draw_item ENDP
+
+; ---------------------------------------------------------------------------
+; ui_draw_button(dis) -> void. Paints one Fluent button into dis->hDC.
+;
+; The full control rect is filled with the ambient surface first, then the
+; rounded surface inset by one pixel is drawn over it, so the antialiased corners
+; sit on the right background rather than black (the plain-HDC hazard docs/ink.md
+; and docs/overlay.md record). The label is drawn with GDI afterwards for
+; ClearType, after GdipFlush drains the batched shape.
+; ---------------------------------------------------------------------------
+ui_draw_button PROC USES ebx esi edi dis:DWORD
+    LOCAL gfx:DWORD
+    LOCAL kind:DWORD
+    LOCAL ambientRole:DWORD
+    LOCAL dark:DWORD
+    LOCAL fillCr:DWORD
+    LOCAL borderCr:DWORD
+    LOCAL textCr:DWORD
+    LOCAL pressedCr:DWORD
+    LOCAL disabledCr:DWORD
+    LOCAL ambientCr:DWORD
+    LOCAL glyph:DWORD
+    LOCAL w:DWORD
+    LOCAL h:DWORD
+    LOCAL x:DWORD
+    LOCAL y:DWORD
+    LOCAL rc:RECT
+    LOCAL gr:RECT
+    LOCAL mrc:RECT
+    LOCAL textW:DWORD
+    LOCAL glyphx:DWORD
+    LOCAL hasGlyph:DWORD
+    LOCAL buf[64]:WORD
+
+    mov  esi, dis
+    mov  gfx, 0
+    mov  kind, UI_KIND_BUTTON
+    mov  ambientRole, UI_AMBIENT_BG
+
+    ; rcItem -> the local RECT (also the DrawTextW target).
+    mov  eax, [esi].DRAWITEMSTRUCT.rcItem.left
+    mov  rc.left, eax
+    mov  eax, [esi].DRAWITEMSTRUCT.rcItem.top
+    mov  rc.top, eax
+    mov  eax, [esi].DRAWITEMSTRUCT.rcItem.right
+    mov  rc.right, eax
+    mov  eax, [esi].DRAWITEMSTRUCT.rcItem.bottom
+    mov  rc.bottom, eax
+
+    ; Kind and ambient from the registration; defaults stand if unattached.
+    mov  eax, [esi].DRAWITEMSTRUCT.hwndItem
+    INVOKE ui_find, eax
+    cmp  eax, -1
+    je   udb_slot_done
+    imul eax, eax, SIZEOF UiSlot
+    add  eax, OFFSET ui_slots
+    mov  ecx, [eax].UiSlot.kind
+    mov  kind, ecx
+    mov  ecx, [eax].UiSlot.ambient
+    mov  ambientRole, ecx
+udb_slot_done:
+
+    INVOKE theme_is_dark
+    mov  dark, eax
+
+    ; Base tokens by theme.
+    cmp  dark, 0
+    je   udb_light
+    mov  fillCr, SURFACE_DARK
+    mov  borderCr, BORDER_DARK
+    mov  textCr, TEXT_DARK
+    mov  pressedCr, PRESSED_DARK
+    mov  disabledCr, DISABLED_DARK
+    jmp  udb_colors_done
+udb_light:
+    mov  fillCr, SURFACE_LIGHT
+    mov  borderCr, BORDER_LIGHT
+    mov  textCr, TEXT_LIGHT
+    mov  pressedCr, PRESSED_LIGHT
+    mov  disabledCr, DISABLED_LIGHT
+udb_colors_done:
+
+    ; The primary button is accent-filled, white text, no border.
+    cmp  kind, UI_KIND_BUTTON_PRIMARY
+    jne  udb_not_primary
+    mov  eax, ui_accent
+    mov  fillCr, eax
+    mov  borderCr, 0
+    mov  textCr, WHITE
+udb_not_primary:
+
+    ; Pressed overrides the fill (the accent already reads as active).
+    mov  eax, [esi].DRAWITEMSTRUCT.itemState
+    test eax, ODS_SELECTED
+    jz   udb_not_pressed
+    cmp  kind, UI_KIND_BUTTON_PRIMARY
+    je   udb_not_pressed
+    mov  eax, pressedCr
+    mov  fillCr, eax
+udb_not_pressed:
+
+    ; Disabled: muted text.
+    mov  eax, [esi].DRAWITEMSTRUCT.itemState
+    test eax, ODS_DISABLED
+    jz   udb_not_disabled
+    mov  eax, disabledCr
+    mov  textCr, eax
+udb_not_disabled:
+
+    ; Full-rect size.
+    mov  eax, rc.right
+    sub  eax, rc.left
+    mov  w, eax
+    mov  eax, rc.bottom
+    sub  eax, rc.top
+    mov  h, eax
+
+    ; The label / glyph text, fetched once.
+    INVOKE GetWindowTextW, [esi].DRAWITEMSTRUCT.hwndItem, ADDR buf, 64
+
+    ; A labelled glyph button ("+ New") lays its "+" and its label out as one
+    ; centred group. The label width is measured with the label font; the group
+    ; is (16px glyph + 4px gap + label), centred on the button.
+    mov  hasGlyph, 0
+    cmp  kind, UI_KIND_BUTTON_GLYPH
+    jne  udb_layout_done
+    cmp  ui_iconfont, 0
+    je   udb_layout_done
+    cmp  ui_font_gdi, 0
+    je   udb_measure
+    INVOKE SelectObject, [esi].DRAWITEMSTRUCT.hDC, ui_font_gdi
+udb_measure:
+    mov  mrc.left, 0
+    mov  mrc.top, 0
+    mov  mrc.right, 0
+    mov  mrc.bottom, 0
+    INVOKE DrawTextW, [esi].DRAWITEMSTRUCT.hDC, ADDR buf, -1, ADDR mrc, DT_CALCRECT OR DT_SINGLELINE
+    mov  eax, mrc.right
+    mov  textW, eax
+    add  eax, 20                 ; + the 16px glyph and the 4px gap
+    mov  edx, w
+    sub  edx, eax
+    sar  edx, 1
+    add  edx, rc.left
+    mov  glyphx, edx
+    mov  hasGlyph, 1
+udb_layout_done:
+
+    INVOKE GdipCreateFromHDC, [esi].DRAWITEMSTRUCT.hDC, ADDR gfx
+    test eax, eax
+    jnz  udb_text
+    cmp  gfx, 0
+    je   udb_text
+
+    INVOKE GdipSetSmoothingMode, gfx, SmoothingModeAntiAlias
+
+    ; Ambient wash over the whole rect.
+    INVOKE ui_ambient_color, ambientRole
+    mov  ambientCr, eax
+    INVOKE ui_fill_rect, gfx, rc.left, rc.top, w, h, ambientCr
+
+    ; Rounded surface, inset 1px so the hairline border is not clipped.
+    mov  eax, rc.left
+    inc  eax
+    mov  x, eax
+    mov  eax, rc.top
+    inc  eax
+    mov  y, eax
+    mov  eax, w
+    sub  eax, 2
+    mov  w, eax
+    mov  eax, h
+    sub  eax, 2
+    mov  h, eax
+
+    INVOKE ui_round_rect, gfx, x, y, w, h, UI_RADIUS, fillCr, borderCr
+
+    ; An icon button's glyph (or a labelled button's leading "+") is drawn with
+    ; GDI+ (its family renders the Segoe Fluent Icons PUA codepoints reliably); a
+    ; plain button's label is GDI below.
+    cmp  kind, UI_KIND_ICON
+    je   udb_icon_glyph
+    cmp  kind, UI_KIND_BUTTON_GLYPH
+    je   udb_lead_glyph
+    jmp  udb_no_glyph
+udb_icon_glyph:
+    movzx eax, WORD PTR buf
+    mov  glyph, eax
+    cmp  glyph, 0
+    je   udb_no_glyph
+    INVOKE ui_draw_icon, gfx, glyph, ADDR rc, textCr
+    jmp  udb_no_glyph
+udb_lead_glyph:
+    ; The centred "+" box, when the icon font loaded.
+    cmp  hasGlyph, 0
+    je   udb_no_glyph
+    mov  eax, glyphx
+    mov  gr.left, eax
+    mov  eax, rc.top
+    mov  gr.top, eax
+    mov  eax, glyphx
+    add  eax, 16
+    mov  gr.right, eax
+    mov  eax, rc.bottom
+    mov  gr.bottom, eax
+    INVOKE ui_draw_icon, gfx, ICON_ADD, ADDR gr, textCr
+udb_no_glyph:
+    INVOKE GdipFlush, gfx, FlushIntentionSync
+    INVOKE GdipDeleteGraphics, gfx
+
+udb_text:
+    ; Labels only. Icon buttons were painted in the GDI+ block above.
+    cmp  kind, UI_KIND_ICON
+    je   udb_done
+    INVOKE SetBkMode, [esi].DRAWITEMSTRUCT.hDC, TRANSPARENT_BK
+    INVOKE SetTextColor, [esi].DRAWITEMSTRUCT.hDC, textCr
+    cmp  ui_font_gdi, 0
+    je   udb_fmt
+    INVOKE SelectObject, [esi].DRAWITEMSTRUCT.hDC, ui_font_gdi
+udb_fmt:
+    ; A labelled glyph button's text sits to the right of its "+"; every other
+    ; label is centred.
+    cmp  hasGlyph, 0
+    je   udb_center_draw
+    mov  eax, glyphx
+    add  eax, 20
+    mov  rc.left, eax
+    INVOKE DrawTextW, [esi].DRAWITEMSTRUCT.hDC, ADDR buf, -1, ADDR rc, DT_LEFT OR DT_VCENTER OR DT_SINGLELINE
+    jmp  udb_done
+udb_center_draw:
+    INVOKE DrawTextW, [esi].DRAWITEMSTRUCT.hDC, ADDR buf, -1, ADDR rc, DT_CENTER OR DT_VCENTER OR DT_SINGLELINE
+udb_done:
+    xor  eax, eax
+    ret
+ui_draw_button ENDP
+
+; ---------------------------------------------------------------------------
+; ui_load_icon_font() -> void. Builds ui_iconfont from a Segoe Fluent Icons .ttf
+; read into a private GDI+ collection. Best-effort: on any failure ui_iconfont
+; stays 0 and ui_draw_icon falls back to the vector glyphs.
+;
+; The face is taken from the collection's own family list, never looked up by
+; name: this image's installed-font collection omits the Segoe families (GDI+
+; returns FontFamilyNotFound for "Segoe UI" and "Segoe Fluent Icons" alike,
+; though GDI enumerates them and a .NET probe resolves them), and a by-name
+; lookup inside the private collection fails the same way. The file itself is
+; perfectly readable, so the family handle is the reliable route.
+; ---------------------------------------------------------------------------
+ui_load_icon_font PROC USES ebx esi edi
+    LOCAL count:DWORD
+    LOCAL found:DWORD
+
+    mov  ui_iconfont, 0
+    mov  ui_iconcoll, 0
+    mov  ui_iconfamily, 0
+
+    INVOKE GdipNewPrivateFontCollection, ADDR ui_iconcoll
+    test eax, eax
+    jnz  ulif_done
+    cmp  ui_iconcoll, 0
+    je   ulif_done
+
+    ; %WINDIR%\Fonts\SegoeIcons.ttf, else %WINDIR%\Fonts\segmdl2.ttf.
+    INVOKE ui_icon_path, OFFSET icofile_icons
+    INVOKE GdipPrivateAddFontFile, ui_iconcoll, ADDR ui_fontpath
+    test eax, eax
+    jz   ulif_families
+    INVOKE ui_icon_path, OFFSET icofile_mdl2
+    INVOKE GdipPrivateAddFontFile, ui_iconcoll, ADDR ui_fontpath
+    test eax, eax
+    jnz  ulif_done
+
+ulif_families:
+    mov  count, 0
+    INVOKE GdipGetFontCollectionFamilyCount, ui_iconcoll, ADDR count
+    cmp  count, 0
+    jle  ulif_done
+    cmp  count, 4
+    jle  ulif_cap
+    mov  count, 4
+ulif_cap:
+    INVOKE GdipGetFontCollectionFamilyList, ui_iconcoll, count, ADDR ui_iconfamarr, ADDR found
+    cmp  found, 0
+    jle  ulif_done
+    mov  eax, ui_iconfamarr
+    mov  ui_iconfamily, eax
+
+    INVOKE GdipCreateFont, ui_iconfamily, ICON_EM, 0, UnitPixel, ADDR ui_iconfont
+ulif_done:
+    ret
+ui_load_icon_font ENDP
+
+; ---------------------------------------------------------------------------
+; ui_icon_path(sufx) -> void. Writes GetWindowsDirectoryW(sufx) into ui_fontpath,
+; where sufx is a wide "\Fonts\<file>.ttf".
+; ---------------------------------------------------------------------------
+ui_icon_path PROC USES esi edi sufx:DWORD
+    INVOKE GetWindowsDirectoryW, ADDR ui_fontpath, 260
+    lea  edi, ui_fontpath
+    lea  edi, [edi + eax*2]
+    mov  esi, sufx
+uip_copy:
+    mov  ax, [esi]
+    mov  [edi], ax
+    test ax, ax
+    jz   uip_done
+    add  esi, 2
+    add  edi, 2
+    jmp  uip_copy
+uip_done:
+    ret
+ui_icon_path ENDP
+
+; ---------------------------------------------------------------------------
+; ui_draw_glyph(gfx, glyph, prc, cr) -> void. Draws the codepoint glyph from the
+; loaded icon font, centred in the button rect, in the colour cr. The layout rect
+; is the button as REALs (x87 float conversion) with centre/centre alignment, and
+; the brush is a solid fill in cr. All GDI+ objects are freed.
+; ---------------------------------------------------------------------------
+ui_draw_glyph PROC USES ebx esi edi gfx:DWORD, glyph:DWORD, prc:DWORD, cr:DWORD
+    LOCAL brush:DWORD
+    LOCAL sfmt:DWORD
+    LOCAL rf:RectF
+    LOCAL gstr[4]:WORD
+
+    mov  brush, 0
+    mov  sfmt, 0
+
+    ; glyph -> a one-character wide string.
+    mov  eax, glyph
+    mov  WORD PTR gstr, ax
+    mov  WORD PTR [gstr+2], 0
+
+    ; rf = the button rect, as REALs.
+    mov  esi, prc
+    fild DWORD PTR [esi]
+    fstp DWORD PTR rf.x
+    fild DWORD PTR [esi+4]
+    fstp DWORD PTR rf.y
+    mov  eax, [esi+8]
+    sub  eax, [esi]
+    mov  DWORD PTR rf.w, eax
+    fild DWORD PTR rf.w
+    fstp DWORD PTR rf.w
+    mov  eax, [esi+12]
+    sub  eax, [esi+4]
+    mov  DWORD PTR rf.h, eax
+    fild DWORD PTR rf.h
+    fstp DWORD PTR rf.h
+
+    INVOKE ui_argb, cr
+    mov  ebx, eax
+    INVOKE GdipCreateSolidFill, ebx, ADDR brush
+    cmp  brush, 0
+    je   udg_done
+
+    INVOKE GdipCreateStringFormat, 0, 0, ADDR sfmt
+    cmp  sfmt, 0
+    je   udg_brush
+
+    INVOKE GdipSetStringFormatAlign, sfmt, SA_CENTER
+    INVOKE GdipSetStringFormatLineAlign, sfmt, SA_CENTER
+    INVOKE GdipDrawString, gfx, ADDR gstr, 1, ui_iconfont, ADDR rf, sfmt, brush
+    INVOKE GdipDeleteStringFormat, sfmt
+
+udg_brush:
+    INVOKE GdipDeleteBrush, brush
+udg_done:
+    ret
+ui_draw_glyph ENDP
+
+; ---------------------------------------------------------------------------
+; ui_draw_icon(gfx, glyph, prc, cr) -> void. Draws the tool icon for a Segoe
+; Fluent Icons codepoint, centred on prc, in cr. When the icon font loaded
+; (ui_load_icon_font), the real font glyph is drawn via GdipDrawString; otherwise
+; the codepoint is hand-drawn as a vector polyline (ic_* on a 16x16 grid) with an
+; antialiased pen, so the button is never blank. Best-effort: any failure draws
+; nothing.
+; ---------------------------------------------------------------------------
+ui_draw_icon PROC USES ebx gfx:DWORD, glyph:DWORD, prc:DWORD, cr:DWORD
+    LOCAL pen:DWORD
+    LOCAL argb:DWORD
+    LOCAL ox:DWORD
+    LOCAL oy:DWORD
+
+    mov  pen, 0
+    cmp  gfx, 0
+    je   udi_done
+    cmp  glyph, 0
+    je   udi_done
+
+    ; The real font glyph when the icon font loaded; the vectors otherwise.
+    cmp  ui_iconfont, 0
+    je   udi_vectors
+    INVOKE ui_draw_glyph, gfx, glyph, prc, cr
+    jmp  udi_done
+
+udi_vectors:
+    ; ox/oy place the 16x16 grid's top-left at the button's centre minus 8.
+    mov  esi, prc
+    mov  eax, [esi].RECT.left
+    add  eax, [esi].RECT.right
+    sar  eax, 1
+    sub  eax, 8
+    mov  ox, eax
+    mov  eax, [esi].RECT.top
+    add  eax, [esi].RECT.bottom
+    sar  eax, 1
+    sub  eax, 8
+    mov  oy, eax
+
+    INVOKE ui_argb, cr
+    mov  argb, eax
+    INVOKE GdipCreatePen1, argb, PEN_W_ICON, UnitPixel, ADDR pen
+    test eax, eax
+    jnz  udi_done
+    cmp  pen, 0
+    je   udi_done
+    INVOKE GdipSetPenStartCap, pen, LineCapRound
+    INVOKE GdipSetPenEndCap, pen, LineCapRound
+    INVOKE GdipSetPenLineJoin, pen, LineJoinRound
+
+    mov  eax, glyph
+    cmp  eax, ICON_SAVE
+    je   udi_save
+    cmp  eax, ICON_COPY
+    je   udi_copy
+    cmp  eax, ICON_PEN
+    je   udi_pen
+    cmp  eax, ICON_HILITE
+    je   udi_hl
+    cmp  eax, ICON_ERASER
+    je   udi_er
+    cmp  eax, ICON_UNDO
+    je   udi_undo
+    jmp  udi_cleanup
+
+udi_save:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_save_a, 5, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_save_b, 4, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_save_c, 5, ox, oy
+    jmp  udi_cleanup
+udi_copy:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_copy_a, 5, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_copy_b, 5, ox, oy
+    jmp  udi_cleanup
+udi_pen:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_pen_a, 7, ox, oy
+    jmp  udi_cleanup
+udi_hl:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_hl_a, 5, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_hl_b, 4, ox, oy
+    jmp  udi_cleanup
+udi_er:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_er_a, 5, ox, oy
+    jmp  udi_cleanup
+udi_undo:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_undo_a, 5, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_undo_b, 4, ox, oy
+
+udi_cleanup:
+    INVOKE GdipDeletePen, pen
+udi_done:
+    ret
+ui_draw_icon ENDP
+
+; ---------------------------------------------------------------------------
+; ui_draw_poly(gfx, pen, ppts, n, ox, oy) -> void. Translates n GpPoints by
+; (ox, oy) into the shared scratch and draws them as one open polyline.
+; ---------------------------------------------------------------------------
+ui_draw_poly PROC USES ebx esi edi gfx:DWORD, pen:DWORD, ppts:DWORD, n:DWORD, ox:DWORD, oy:DWORD
+    mov  esi, ppts
+    mov  edi, OFFSET ui_ptbuf
+    mov  ecx, n
+udp_loop:
+    test ecx, ecx
+    jz   udp_draw
+    mov  eax, [esi].POINT.x
+    add  eax, ox
+    mov  [edi].POINT.x, eax
+    mov  eax, [esi].POINT.y
+    add  eax, oy
+    mov  [edi].POINT.y, eax
+    add  esi, SIZEOF POINT
+    add  edi, SIZEOF POINT
+    dec  ecx
+    jmp  udp_loop
+udp_draw:
+    INVOKE GdipDrawLinesI, gfx, pen, OFFSET ui_ptbuf, n
+    ret
+ui_draw_poly ENDP
+
+; ---------------------------------------------------------------------------
+; ui_ambient_color(role) -> COLORREF. The surface behind a control, per theme.
+; ---------------------------------------------------------------------------
+ui_ambient_color PROC USES ebx role:DWORD
+    INVOKE theme_is_dark
+    test eax, eax
+    jz   uac_light
+    cmp  role, UI_AMBIENT_FACE
+    je   uac_dark_face
+    mov  eax, AMB_BG_DARK
+    ret
+uac_dark_face:
+    mov  eax, AMB_FACE_DARK
+    ret
+uac_light:
+    cmp  role, UI_AMBIENT_FACE
+    je   uac_light_face
+    mov  eax, AMB_BG_LIGHT
+    ret
+uac_light_face:
+    mov  eax, AMB_FACE_LIGHT
+    ret
+ui_ambient_color ENDP
+
+; ---------------------------------------------------------------------------
+; ui_argb(colorref) -> ARGB. COLORREF 0x00BBGGRR -> 0xFFRRGGBB, swapped for
+; GDI+'s channel order with an opaque alpha.
+; ---------------------------------------------------------------------------
+ui_argb PROC colorref:DWORD
+    mov  eax, colorref
+    mov  edx, eax
+    and  edx, 0FFh
+    shl  edx, 16                  ; r << 16
+    mov  ecx, eax
+    shr  ecx, 8
+    and  ecx, 0FFh
+    shl  ecx, 8                   ; g << 8
+    or   edx, ecx
+    mov  ecx, eax
+    shr  ecx, 16
+    and  ecx, 0FFh                ; b
+    or   edx, ecx
+    or   edx, 0FF000000h          ; opaque
+    mov  eax, edx
+    ret
+ui_argb ENDP
+
+; ---------------------------------------------------------------------------
+; ui_fill_rect(gfx, x, y, w, h, colorref) -> void. One opaque solid fill.
+; ---------------------------------------------------------------------------
+ui_fill_rect PROC USES ebx gfx:DWORD, x:DWORD, y:DWORD, w:DWORD, h:DWORD, colorref:DWORD
+    LOCAL brush:DWORD
+    LOCAL argb:DWORD
+    mov  brush, 0
+    INVOKE ui_argb, colorref
+    mov  argb, eax
+    INVOKE GdipCreateSolidFill, argb, ADDR brush
+    test eax, eax
+    jnz  ufr_done
+    cmp  brush, 0
+    je   ufr_done
+    INVOKE GdipFillRectangleI, gfx, brush, x, y, w, h
+    INVOKE GdipDeleteBrush, brush
+ufr_done:
+    ret
+ui_fill_rect ENDP
+
+; ---------------------------------------------------------------------------
+; ui_round_rect(gfx, x, y, w, h, radius, fillCr, borderCr) -> void. One
+; antialiased rounded rectangle: four arcs closed into a path, filled, and (when
+; borderCr is nonzero) stroked with a 1px border. All GDI+ objects are freed.
+; ---------------------------------------------------------------------------
+ui_round_rect PROC USES ebx esi edi gfx:DWORD, x:DWORD, y:DWORD, w:DWORD, h:DWORD, radius:DWORD, fillCr:DWORD, borderCr:DWORD
+    LOCAL path:DWORD
+    LOCAL brush:DWORD
+    LOCAL pen:DWORD
+    LOCAL d:DWORD
+    LOCAL argb:DWORD
+
+    mov  path, 0
+    mov  brush, 0
+    mov  pen, 0
+
+    INVOKE GdipCreatePath, FillModeWinding, ADDR path
+    test eax, eax
+    jnz  urr_done
+    cmp  path, 0
+    je   urr_done
+
+    mov  eax, radius
+    shl  eax, 1
+    mov  d, eax                   ; arc box is 2r x 2r
+
+    ; TL(180), TR(270), BR(0), BL(90), +90 each; AddArc lines between them.
+    INVOKE GdipAddPathArcI, path, x, y, d, d, ARCF_180, ARCF_90
+    mov  eax, x
+    add  eax, w
+    sub  eax, d
+    INVOKE GdipAddPathArcI, path, eax, y, d, d, ARCF_270, ARCF_90
+    mov  eax, x
+    add  eax, w
+    sub  eax, d
+    mov  edx, y
+    add  edx, h
+    sub  edx, d
+    INVOKE GdipAddPathArcI, path, eax, edx, d, d, ARCF_0, ARCF_90
+    mov  edx, y
+    add  edx, h
+    sub  edx, d
+    INVOKE GdipAddPathArcI, path, x, edx, d, d, ARCF_90, ARCF_90
+    INVOKE GdipClosePathFigure, path
+
+    ; Fill.
+    INVOKE ui_argb, fillCr
+    mov  argb, eax
+    INVOKE GdipCreateSolidFill, argb, ADDR brush
+    test eax, eax
+    jnz  urr_cleanup
+    cmp  brush, 0
+    je   urr_cleanup
+    INVOKE GdipFillPath, gfx, brush, path
+
+    ; Border.
+    cmp  borderCr, 0
+    je   urr_cleanup
+    INVOKE ui_argb, borderCr
+    mov  argb, eax
+    INVOKE GdipCreatePen1, argb, PEN_W_1, UnitPixel, ADDR pen
+    test eax, eax
+    jnz  urr_cleanup
+    cmp  pen, 0
+    je   urr_cleanup
+    INVOKE GdipDrawPath, gfx, pen, path
+
+urr_cleanup:
+    cmp  pen, 0
+    je   urr_c1
+    INVOKE GdipDeletePen, pen
+urr_c1:
+    cmp  brush, 0
+    je   urr_c2
+    INVOKE GdipDeleteBrush, brush
+urr_c2:
+    cmp  path, 0
+    je   urr_done
+    INVOKE GdipDeletePath, path
+urr_done:
+    ret
+ui_round_rect ENDP
+
+; ---------------------------------------------------------------------------
+; ui_resolve_accent() -> void. Sets ui_accent to the user's accent colour, or to
+; ACCENT_FALLBACK. DwmGetColorizationColor is resolved once and cached; it
+; returns 0xAARRGGBB, converted here to a COLORREF. Best-effort: any failure
+; keeps the fallback.
+; ---------------------------------------------------------------------------
+ui_resolve_accent PROC
+    mov  ui_accent, ACCENT_FALLBACK
+
+    mov  eax, pfn_DwmGetColorizationColor
+    test eax, eax
+    jnz  ura_call                 ; already resolved
+
+    INVOKE LoadLibraryA, OFFSET dwmapi_dll
+    test eax, eax
+    jz   ura_done
+    INVOKE GetProcAddress, eax, OFFSET fn_dwmcolor
+    mov  pfn_DwmGetColorizationColor, eax
+    test eax, eax
+    jz   ura_done
+
+ura_call:
+    mov  eax, pfn_DwmGetColorizationColor
+    push OFFSET ura_opaque
+    push OFFSET ura_color
+    call eax
+    test eax, eax
+    jnz  ura_done                 ; nonzero HRESULT: keep the fallback
+
+    ; ARGB (0xAARRGGBB) -> COLORREF (0x00BBGGRR), swapping the R and B bytes.
+    mov  ecx, ura_color
+    mov  eax, ecx
+    shr  eax, 16
+    and  eax, 0FFh                ; r
+    mov  edx, ecx
+    shr  edx, 8
+    and  edx, 0FFh                ; g
+    shl  edx, 8
+    or   eax, edx                 ; r | g << 8
+    and  ecx, 0FFh                ; b
+    shl  ecx, 16
+    or   eax, ecx                 ; r | g << 8 | b << 16
+    mov  ui_accent, eax
+
+ura_done:
+    ret
+ui_resolve_accent ENDP
+
+END

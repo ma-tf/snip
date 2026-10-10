@@ -34,6 +34,7 @@ PUBLIC theme_apply
 PUBLIC theme_bg_brush
 PUBLIC theme_face_brush
 PUBLIC theme_hint_color
+PUBLIC theme_is_dark
 
 ; ---------------------------------------------------------------------------
 ; Statics. The Shell and the Editor are singletons, so the palette lives here.
@@ -235,5 +236,16 @@ theme_hint_color PROC
     mov  eax, theme_hint
     ret
 theme_hint_color ENDP
+
+; ---------------------------------------------------------------------------
+; theme_is_dark() -> eax = the current theme flag (1 dark, 0 light). The skin
+; (ui.asm) keys its control palette off this, the way the window classes key
+; their backgrounds off theme_bg_brush. Read-only: it never re-probes, so a
+; caller that needs the live value calls theme_refresh first.
+; ---------------------------------------------------------------------------
+theme_is_dark PROC
+    mov  eax, theme_dark
+    ret
+theme_is_dark ENDP
 
 END

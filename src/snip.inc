@@ -129,6 +129,36 @@ theme_apply      PROTO STDCALL :DWORD               ; void theme_apply(HWND hwnd
 theme_bg_brush   PROTO STDCALL                      ; HBRUSH theme_bg_brush(void) - client background
 theme_face_brush PROTO STDCALL                      ; HBRUSH theme_face_brush(void) - toolbar / surface
 theme_hint_color PROTO STDCALL                      ; COLORREF theme_hint_color(void) - secondary text
+theme_is_dark    PROTO STDCALL                      ; DWORD theme_is_dark(void) - the flag, for the control skin
+
+; ui.asm - the Fluent control skin: owner-draw for the buttons and the two
+; drop-downs, so they carry the Windows 11 look and go dark on a dark system
+; without a comctl32 v6 manifest. ui_init runs once from snip.asm; ui_attach
+; subclasses a control and records its kind; ui_draw_item paints it from the
+; parent's WM_DRAWITEM; ui_theme_changed re-resolves the accent on a theme flip.
+; Best-effort throughout: a missing GDI+ leaves the classic controls. See
+; docs/ui.md and ADR-0004.
+ui_init          PROTO STDCALL                      ; BOOL ui_init(void) - GDI+ + fonts + accent, once
+ui_attach        PROTO STDCALL :DWORD, :DWORD, :DWORD  ; void ui_attach(HWND control, DWORD kind, DWORD ambient)
+ui_draw_item     PROTO STDCALL :DWORD, :DWORD       ; void ui_draw_item(HWND parent, DRAWITEMSTRUCT *dis)
+ui_theme_changed PROTO STDCALL                      ; void ui_theme_changed(void)
+
+; The control kinds ui_attach records. ui.asm draws from these, so it stays free
+; of our control ids: both New buttons are BUTTON_GLYPH (plain, with a leading
+; "+" and a centred label), ICON buttons draw a Segoe Fluent Icons glyph (the
+; button's window text) instead of a label, and every other button is plain.
+; UI_KIND_BUTTON_PRIMARY (the accent-filled Fluent primary) is defined but no
+; control uses it yet.
+UI_KIND_BUTTON         EQU 0
+UI_KIND_BUTTON_PRIMARY EQU 1
+UI_KIND_ICON           EQU 2
+UI_KIND_BUTTON_GLYPH   EQU 3   ; a plain button with a leading "+" glyph and a label
+
+; The ambient surface a control sits on, resolved to a colour per theme at draw
+; time: the Shell's buttons sit on the client background, the Editor's on the
+; toolbar strip. A control's rounded corners reveal this surface.
+UI_AMBIENT_BG          EQU 0
+UI_AMBIENT_FACE        EQU 1
 
 ; keys.asm - the keyboard map: the accelerator tables and their routing. It
 ; owns no actions; a matched key becomes a WM_COMMAND carrying an IDA_* id,

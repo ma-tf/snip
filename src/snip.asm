@@ -68,6 +68,11 @@ WinMainASM PROC
     ; failure just leaves the annotation buttons inert, like WIC above.
     INVOKE ink_init
 
+    ; The Fluent control skin (ticket 01): its own GDI+, the accent colour, and
+    ; the font families for the owner-drawn buttons and drop-downs. Best-effort
+    ; like the two above: a failure leaves the classic controls.
+    INVOKE ui_init
+
     ; hinst = GetModuleHandleW(NULL)
     INVOKE GetModuleHandleW, 0
     mov  app.hInstance, eax
