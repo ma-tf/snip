@@ -5,10 +5,10 @@ template in [`docs/architecture.md`](architecture.md).
 
 ## What it is
 
-One module that reads the system app theme once at startup and uses the answer in two ways:
-it hands the window classes and the paint paths a small palette, and it asks DWM to round the
-top-level frames and set a title bar that matches the theme. The app follows the system theme
-without any user setting of its own.
+One module that reads the system light/dark theme at startup — and again whenever it changes —
+and uses the answer in two ways: it hands the window classes and the paint paths a small palette,
+and it asks DWM to round the top-level frames and set a title bar that matches the theme. The app
+follows the system theme without any user setting of its own.
 
 The reach is deliberately partial. Only the parts the app draws itself — the client background,
 the Editor's toolbar strip, and the Shell's hint text — and the window frame change with the
@@ -18,13 +18,17 @@ the build cannot ship. See [ADR-0003](adr/0003-theme-chrome-only.md) for why.
 ## Where it lives
 
 `src/theme.asm`. It owns the theme flag, the palette, and the two runtime-resolved entry points.
-`src/snip.inc` is the seam: `theme_init` runs once from `snip.asm`; `theme_apply` dresses a
-top-level window; `theme_bg_brush` / `theme_face_brush` / `theme_hint_color` hand back the
-palette. `src/win32.inc` holds the DWM attribute constants and the uxtheme ordinal.
+`src/snip.inc` is the seam: `theme_init` runs once from `snip.asm`; `theme_refresh` re-reads the
+theme on a change and returns the new flag; `theme_apply` dresses a top-level window;
+`theme_bg_brush` / `theme_face_brush` / `theme_hint_color` hand back the palette. `src/win32.inc`
+holds the DWM attribute constants, the uxtheme ordinal, and the `GCLP_HBRBACKGROUND` / `RDW_*`
+constants the live path uses.
 
 The callers are `shell.asm` and `editor.asm`: each calls `theme_apply` in its create path, takes
 its class background from `theme_bg_brush`, and — in the Editor's paint — fills the toolbar strip
-from `theme_face_brush` and the image backdrop from `theme_bg_brush`.
+from `theme_face_brush` and the image backdrop from `theme_bg_brush`. Each also handles
+`WM_SETTINGCHANGE`: it calls `theme_refresh`, and if the flag changed, re-dresses the frame, swaps
+its class background with `SetClassLongW`, and repaints.
 
 ## How it works
 
@@ -35,11 +39,12 @@ query, but it returns `0` in the app's bare Win32 process, so the dark palette w
 reading `AppsUseLightTheme` from the registry instead returns `ERROR_NOACCESS` from this image. See
 [ADR-0003](adr/0003-theme-chrome-only.md).
 
-**The palette is chosen once, from the flag.** Light is exactly what the Shell and Editor used
-before theming: the `COLOR_WINDOW_1` / `COLOR_BTNFACE_1` pseudo-HBRUSHes and the `#808080` hint.
-Dark is Fluent's base and alt-surface greys (`#202020`, `#2B2B2B`) as real `CreateSolidBrush`
-brushes, with `#C5C5C5` secondary text. The class background accepts either a real brush or the
-pseudo value, so the light path is unchanged and a failure leaves the pre-theming look.
+**The palette follows the flag.** Light is exactly what the Shell and Editor used before theming:
+the `COLOR_WINDOW_1` / `COLOR_BTNFACE_1` pseudo-HBRUSHes and the `#808080` hint. Dark is Fluent's
+base and alt-surface greys (`#202020`, `#2B2B2B`) as real `CreateSolidBrush` brushes, with
+`#C5C5C5` secondary text. The class background accepts either a real brush or the pseudo value, so
+the light path is unchanged and a failure leaves the pre-theming look. `theme_refresh` rebuilds
+both sets only when the flag actually flips.
 
 **DWM supplies the chrome.** `theme_apply` sets `DWMWA_USE_IMMERSIVE_DARK_MODE` to the flag (so the
 title bar is dark on a dark system and light on a light one) and `DWMWA_WINDOW_CORNER_PREFERENCE`
@@ -51,6 +56,14 @@ the same Crinkler-safe pattern `capture.asm` uses for `DwmGetWindowAttribute`, s
 no import library. If either DLL or export is missing, the affected step is skipped and the light
 palette stands.
 
+**A theme change restyles live.** Windows broadcasts `WM_SETTINGCHANGE` (whose `lParam` names
+`ImmersiveColorSet`) when the theme flips. Each window's handler calls `theme_refresh`, which
+re-reads ordinal 138; a window that was drawing the old flag then re-runs `theme_apply`, swaps its
+class background with `SetClassLongW(hwnd, GCLP_HBRBACKGROUND, ...)`, and `RedrawWindow`s itself
+and its children (`RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN`), so the frame, client, hint, and
+Editor strip all follow without a relaunch. `lParam` itself is not inspected: on a broadcast that
+pointer is not reliably readable across processes, and re-reading the value is the robust test.
+
 ## Gotchas
 
 - **The stock controls stay light on a dark system.** This is the manifest ceiling, not a bug
@@ -59,16 +72,19 @@ palette stands.
 - **The light palette is the fallback, so failures are invisible.** A missing uxtheme or a
   `ShouldSystemUseDarkMode` that returns false both leave a working light window; there is nothing to
   assert on. The only observable is the rendered colours.
-- **The theme is read once.** A `WM_SETTINGCHANGE` (`ImmersiveColorSet`) handler that re-reads the
-  theme and repaints is not written; toggling the system theme while the app runs does not restyle
-  it until the next launch.
+- **A `WM_SETTINGCHANGE` whose value did not change is ignored.** The handler compares the re-read
+  flag against the one the window last drew, so unrelated `WM_SETTINGCHANGE`s (fonts, locale) do
+  not repaint a large Editor image. `lParam` is never inspected.
 - **Detect the theme through ordinal 138, not 132 and not the registry.** `ShouldAppsUseDarkMode`
   (132) reads like the purpose-built app-mode query but returns `0` in the app, and the
   `AppsUseLightTheme` registry read returns `ERROR_NOACCESS` (`998`) from this image even though the
   identical call works from a standalone probe. `ShouldSystemUseDarkMode` (138) is the ordinal that
   reports the user's setting here. Covered by [ADR-0003](adr/0003-theme-chrome-only.md).
 - **The dark brushes are created and never deleted.** They live for the life of the process, like
-  the window classes that reference them; there is no `WM_DESTROY` for a class background.
+  the window classes that reference them; there is no `WM_DESTROY` for a class background. A live
+  flip builds a fresh pair and **leaks the old one on purpose**: the Shell's and the Editor's
+  classes share the handle, so freeing it while either still references it would be a
+  use-after-free.
 - **`DWMWA_USE_IMMERSIVE_DARK_MODE` is set to the flag explicitly.** On a light system that means
   forcing a light title bar, which is what the rest of the light window expects; leaving it unset
   would let the frame follow the app default instead.

@@ -109,6 +109,7 @@ ed_file WORD MAX_PATH DUP(?)     ; the Save As file-name buffer
 ed_tool        DWORD ?
 ed_drag        DWORD ?
 ed_dpi         DWORD ?
+ed_theme       DWORD ?      ; the theme flag this window last drew (live update)
 
 ; Ticket 17 view state. The window is resizable; an oversized Snip is fitted
 ; into the image area, and the same fit maps the mouse back to Snip pixels.
@@ -224,6 +225,10 @@ editor_on_create PROC USES ebx esi edi hwnd:DWORD, app:DWORD
 
     ; Rounded frame, themed title bar, dark common-control theme.
     INVOKE theme_apply, ebx
+
+    ; Record the theme this window is built with, for the live-update compare.
+    INVOKE theme_refresh
+    mov  ed_theme, eax
 
     INVOKE GetStockObject, DEFAULT_GUI_FONT
     mov  font, eax
@@ -898,6 +903,8 @@ editor_wndproc PROC hwnd:DWORD, msg:DWORD, wParam:DWORD, lParam:DWORD
     je   ew_up
     cmp  eax, WM_CAPTURECHANGED
     je   ew_capturechanged
+    cmp  eax, WM_SETTINGCHANGE
+    je   ew_settingchange
     cmp  eax, WM_CLOSE
     je   ew_close
 
@@ -1173,6 +1180,24 @@ ew_paint:
 
 ew_erase:
     mov  eax, 1                  ; we paint every pixel ourselves
+    ret
+
+; The system theme changed. Re-read it; on a flip, swap the class background and
+; repaint. editor_do_paint reads the palette accessors, so the toolbar strip and
+; the image backdrop follow. lParam is ignored: on a broadcast it names
+; "ImmersiveColorSet", but that pointer is not reliably readable across
+; processes. The Shell gets the same broadcast and handles its own repaint.
+ew_settingchange:
+    INVOKE theme_refresh
+    cmp  eax, ed_theme
+    je   ew_settingchange_done
+    mov  ed_theme, eax
+    INVOKE theme_apply, hwnd
+    INVOKE theme_bg_brush
+    INVOKE SetClassLongW, hwnd, GCLP_HBRBACKGROUND, eax
+    INVOKE RedrawWindow, hwnd, 0, 0, RDW_INVALIDATE OR RDW_ERASE OR RDW_ALLCHILDREN OR RDW_UPDATENOW
+ew_settingchange_done:
+    xor  eax, eax
     ret
 
 ew_close:

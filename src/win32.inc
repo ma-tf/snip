@@ -72,6 +72,8 @@ GetDC                         PROTO STDCALL :DWORD
 ReleaseDC                     PROTO STDCALL :DWORD, :DWORD
 GetSystemMetrics              PROTO STDCALL :SDWORD
 InvalidateRect                PROTO STDCALL :DWORD, :DWORD, :DWORD
+RedrawWindow                  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+SetClassLongW                 PROTO STDCALL :DWORD, :SDWORD, :DWORD   ; live theme update: swap the class background
 SetCapture                    PROTO STDCALL :DWORD
 ReleaseCapture                PROTO STDCALL
 SetFocus                      PROTO STDCALL :DWORD
@@ -250,6 +252,7 @@ WM_SIZE             EQU 0005h
 WM_PAINT            EQU 000Fh
 WM_CLOSE            EQU 0010h
 WM_ERASEBKGND       EQU 0014h
+WM_SETTINGCHANGE    EQU 001Ah          ; a system setting changed; the theme arrives here
 WM_CTLCOLORSTATIC   EQU 0138h          ; a static asks its parent for colours
 WM_DISPLAYCHANGE    EQU 007Eh          ; a monitor was added, removed, or re-scaled
 WM_KEYDOWN          EQU 0100h
@@ -404,6 +407,14 @@ DWMWCP_ROUND                   EQU 2
 ; HKCU AppsUseLightTheme read returns ERROR_NOACCESS from this image; see
 ; docs/theme.md and ADR-0003.
 UXTHEME_ORD_SHOULD_SYSTEM_USE_DARK_MODE EQU 138
+
+; Live update (theme_refresh): the class-background index for SetClassLongW and
+; the RedrawWindow flags that repaint a window with its children after a flip.
+GCLP_HBRBACKGROUND EQU -10
+RDW_INVALIDATE     EQU 0001h
+RDW_ERASE          EQU 0004h
+RDW_ALLCHILDREN    EQU 0080h
+RDW_UPDATENOW      EQU 0100h
 
 ; ---------------------------------------------------------------------------
 ; Structures (exact x86 layouts from the SDK headers)

@@ -91,6 +91,7 @@ shell_icons   DWORD ?            ; HIMAGELIST, ours to destroy. Module-private
                                  ; because the Shell is a singleton.
 shell_hint    DWORD ?            ; the hint Static, laid out in WM_SIZE
 sfc_in        INPUT 4 DUP(<>)    ; ticket 12: the Alt+Down SendInput batch
+shell_theme   DWORD ?            ; the theme flag this window last drew (live update)
 
 ; The Shell is resizable and maximizable. The three controls stay fixed at the
 ; top; the hint is centred in the space below them.
@@ -169,6 +170,8 @@ shell_wndproc PROC hwnd:DWORD, msg:DWORD, wParam:DWORD, lParam:DWORD
     je   wm_ctlcolor
     cmp  eax, WM_COMMAND
     je   wm_command
+    cmp  eax, WM_SETTINGCHANGE
+    je   wm_settingchange
     cmp  eax, WM_DESTROY
     je   wm_destroy
 
@@ -297,6 +300,30 @@ wm_combo_delay:
     mov  [ecx].App.delay, eax
     ret
 
+; The system theme changed (WM_SETTINGCHANGE). Re-read it; if it differs from
+; what this window last drew, rebuild the class background brush and repaint the
+; window and its hint. lParam is ignored: on a broadcast it names
+; "ImmersiveColorSet", but that pointer is not reliably readable across
+; processes, and re-reading the value is the robust check. The Editor gets the
+; same broadcast and repaints itself. See docs/theme.md.
+wm_settingchange:
+    INVOKE theme_refresh
+    cmp  eax, shell_theme
+    je   wm_settingchange_done
+    mov  shell_theme, eax
+
+    ; Re-dress the frame (DWM title bar) and swap the class background.
+    INVOKE theme_apply, hwnd
+    INVOKE theme_bg_brush
+    INVOKE SetClassLongW, hwnd, GCLP_HBRBACKGROUND, eax
+
+    ; Repaint the window and its children (the hint static shows through it).
+    INVOKE RedrawWindow, hwnd, 0, 0, RDW_INVALIDATE OR RDW_ERASE OR RDW_ALLCHILDREN OR RDW_UPDATENOW
+
+wm_settingchange_done:
+    xor  eax, eax
+    ret
+
 wm_destroy:
     ; The image list is ours, not the controls': destroy it before we quit.
     mov  eax, shell_icons
@@ -371,6 +398,10 @@ shell_on_create PROC USES ebx esi hwnd:DWORD, app:DWORD
 
     ; Rounded frame, themed title bar, dark common-control theme.
     INVOKE theme_apply, ebx
+
+    ; Record the theme this window is built with, for the live-update compare.
+    INVOKE theme_refresh
+    mov  shell_theme, eax
 
     INVOKE GetStockObject, DEFAULT_GUI_FONT
     mov  font, eax

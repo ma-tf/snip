@@ -2,10 +2,11 @@
 
 The app follows the system light/dark theme for the parts it draws itself and for its window
 frame, and leaves the stock common controls alone. Concretely: `theme.asm` asks uxtheme's
-`ShouldSystemUseDarkMode` (ordinal 138) once at startup, picks one of two hardcoded palettes from
-the answer, and uses DWM (`DwmSetWindowAttribute`) to round the top-level frames and set a title
-bar that matches the theme. The client background, the Editor's toolbar strip, and the Shell's
-hint text change with the theme; the `Button`, `ComboBoxEx`, and `Static` controls do not.
+`ShouldSystemUseDarkMode` (ordinal 138) at startup — and again on `WM_SETTINGCHANGE` — picks one
+of two hardcoded palettes from the answer, and uses DWM (`DwmSetWindowAttribute`) to round the
+top-level frames and set a title bar that matches the theme. The client background, the Editor's
+toolbar strip, and the Shell's hint text change with the theme, live; the `Button`, `ComboBoxEx`,
+and `Static` controls do not.
 
 The reason the controls are left out is structural, not a shortcut. A **dark common control needs
 comctl32 v6**, and v6 is only loaded for a process that declares the `Microsoft.Windows.Common-
@@ -39,6 +40,8 @@ story the project has deliberately refused.
   stayed light on a dark desktop. Rejected.
 - **uxtheme's `ShouldSystemUseDarkMode` (ordinal 138)** — reports the user's system theme. Verified
   to return the right value in the app where 132 does not. **Chosen.**
+- **Read the theme only at startup, with no `WM_SETTINGCHANGE` handler** — rejected: the app would
+  keep a stale palette until relaunched, unlike the Win11 reference, which restyles live.
 - **Do nothing** — the app would stay light on a dark desktop, unlike the Win11 reference.
 
 ## Consequences
@@ -51,11 +54,14 @@ story the project has deliberately refused.
   (`COLOR_WINDOW_1`, `COLOR_BTNFACE_1`) and grey the Shell already had, so an unreadable theme
   leaves the pre-theming look byte-for-byte. Dark is Fluent's `#202020`/`#2B2B2B` with `#C5C5C5`
   secondary text. There is no per-accent or per-user-color support.
-- **The theme is read once, at startup.** A `WM_SETTINGCHANGE`/`ImmersiveColorSet` handler that
-  re-reads and repaints live is deferred; toggling the system theme while the app is open does not
-  restyle it until the next launch. This matches how the Shell and Editor are created once and
-  reused.
+- **The theme follows the system live.** Each window handles `WM_SETTINGCHANGE`: `theme_refresh`
+  re-reads ordinal 138, and on a flip the window re-dresses its frame, swaps its class background
+  with `SetClassLongW(GCLP_HBRBACKGROUND, ...)`, and `RedrawWindow`s itself and its children. A
+  `WM_SETTINGCHANGE` whose flag did not change is ignored, so an unrelated setting change costs only
+  a re-read. `lParam` (the `ImmersiveColorSet` name) is deliberately not inspected — the pointer is
+  not reliably readable across processes. The pre-flip brushes are leaked on purpose, because the
+  Shell's and the Editor's classes share the handle.
 - **The chrome is best-effort.** `DwmSetWindowAttribute` attribute indices and the uxtheme ordinal
   are either Win11-only or undocumented; every call is guarded and a failure leaves the light
   palette, so the module degrades rather than breaks. The size build cost of the whole module is
-  **+111 bytes** (8,906 → 9,017).
+  **+236 bytes** (8,906 → 9,142).

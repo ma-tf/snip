@@ -124,6 +124,7 @@ shell_create PROTO STDCALL :DWORD   ; HWND shell_create(App *app) - see shell.as
 ; failure anywhere leaves the light palette and no chrome, so it never blocks
 ; startup. See docs/theme.md.
 theme_init       PROTO STDCALL                      ; void theme_init(void)
+theme_refresh    PROTO STDCALL                      ; DWORD theme_refresh(void) - re-read on WM_SETTINGCHANGE; returns the new flag
 theme_apply      PROTO STDCALL :DWORD               ; void theme_apply(HWND hwnd)
 theme_bg_brush   PROTO STDCALL                      ; HBRUSH theme_bg_brush(void) - client background
 theme_face_brush PROTO STDCALL                      ; HBRUSH theme_face_brush(void) - toolbar / surface

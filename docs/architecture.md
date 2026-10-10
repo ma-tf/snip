@@ -75,11 +75,12 @@ The Shell's drop-downs are `ComboBoxEx32` (comctl32, icons drawn at runtime); th
 its gotchas live in [`docs/shell.md`](shell.md).
 
 **The window follows the system theme; the controls do not.** `theme.asm` asks uxtheme's
-`ShouldSystemUseDarkMode` (ordinal 138) once at startup, picks one of two hardcoded palettes, and
-dresses each top-level window with DWM rounded corners and a themed title bar. Only the chrome and
-the surfaces the app draws itself (the client, the Editor's toolbar strip, the Shell's hint) change
-with the theme; the stock controls stay light, because a dark common control needs comctl32 v6 and
-its startup manifest, which the single-exe Crinkler build cannot carry. See
+`ShouldSystemUseDarkMode` (ordinal 138) at startup and again on `WM_SETTINGCHANGE`, picks one of
+two hardcoded palettes, and dresses each top-level window with DWM rounded corners and a themed
+title bar; a live change re-reads the flag and repaints. Only the chrome and the surfaces the app
+draws itself (the client, the Editor's toolbar strip, the Shell's hint) change with the theme; the
+stock controls stay light, because a dark common control needs comctl32 v6 and its startup
+manifest, which the single-exe Crinkler build cannot carry. See
 [`docs/theme.md`](theme.md) and
 [ADR-0003](adr/0003-theme-chrome-only.md).
 

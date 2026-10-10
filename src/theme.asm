@@ -29,6 +29,7 @@ include snip.inc
 include win32.inc
 
 PUBLIC theme_init
+PUBLIC theme_refresh
 PUBLIC theme_apply
 PUBLIC theme_bg_brush
 PUBLIC theme_face_brush
@@ -60,8 +61,40 @@ theme_hint     DWORD ?          ; COLORREF for secondary text
 theme_attr     DWORD ?          ; scratch for a DWM attribute value
 
 pfn_DwmSetWindowAttribute DWORD ?
+pfn_ShouldSystemUseDarkMode DWORD ?   ; resolved once, reused by every theme_refresh
 
 .code
+
+; ---------------------------------------------------------------------------
+; theme_probe() -> eax = 1 if the system is in its dark theme, else 0.
+;
+; Calls uxtheme's ShouldSystemUseDarkMode (ordinal 138), resolving it once and
+; caching the pointer. Any failure - no uxtheme, no export - reports light. It
+; touches no palette state, so both theme_init and theme_refresh build on it. It
+; reads the live theme, so a re-call after WM_SETTINGCHANGE returns the new value.
+; ---------------------------------------------------------------------------
+theme_probe PROC
+    mov  eax, pfn_ShouldSystemUseDarkMode
+    test eax, eax
+    jnz  tp_call                 ; already resolved
+
+    INVOKE LoadLibraryA, OFFSET uxtheme_dll
+    test eax, eax
+    jz   tp_light
+    INVOKE GetProcAddress, eax, UXTHEME_ORD_SHOULD_SYSTEM_USE_DARK_MODE
+    mov  pfn_ShouldSystemUseDarkMode, eax
+    test eax, eax
+    jz   tp_light
+tp_call:
+    call eax
+    test eax, eax
+    jz   tp_light
+    mov  eax, 1
+    ret
+tp_light:
+    xor  eax, eax
+    ret
+theme_probe ENDP
 
 ; ---------------------------------------------------------------------------
 ; theme_init() -> void. Called once from snip.asm before any window exists.
@@ -85,16 +118,8 @@ theme_init PROC
     ; reading HKCU's AppsUseLightTheme instead returns ERROR_NOACCESS from this
     ; image. 138 is the ordinal that reports the user's setting here. See
     ; docs/theme.md and ADR-0003.
-    INVOKE LoadLibraryA, OFFSET uxtheme_dll
-    test eax, eax
-    jz   ti_dwm
-    INVOKE GetProcAddress, eax, UXTHEME_ORD_SHOULD_SYSTEM_USE_DARK_MODE
-    test eax, eax
-    jz   ti_dwm
-    call eax
-    test eax, eax
-    jz   ti_dwm
-    mov  theme_dark, 1
+    INVOKE theme_probe
+    mov  theme_dark, eax
 
 ti_dwm:
     ; --- dwmapi.dll: the window chrome, resolved whatever the theme ---
@@ -115,6 +140,45 @@ ti_palette:
 ti_done:
     ret
 theme_init ENDP
+
+; ---------------------------------------------------------------------------
+; theme_refresh() -> eax = the current theme flag (1 dark, 0 light), after
+; re-reading the system. Called from each window's WM_SETTINGCHANGE handler.
+;
+; Rebuilds theme_bg / theme_face / theme_hint only when the value flipped, so a
+; caller can compare the return against the value it last drew to decide whether
+; to repaint. The previous brushes are not deleted: the Shell's and the Editor's
+; window classes were both registered with the same handle, so freeing it while
+; either still references it would be a use-after-free, and the Editor's paint
+; reads the same handle. A toggle therefore leaks one pair of brushes, exactly
+; as the module already leaked the startup pair. See docs/theme.md.
+; ---------------------------------------------------------------------------
+theme_refresh PROC USES ebx
+    INVOKE theme_probe
+    mov  ebx, eax
+    cmp  ebx, theme_dark
+    je   tr_done                 ; unchanged: leave the palette alone
+
+    mov  theme_dark, ebx
+    test ebx, ebx
+    jz   tr_light
+
+    INVOKE CreateSolidBrush, DARK_BG
+    mov  theme_bg, eax
+    INVOKE CreateSolidBrush, DARK_FACE
+    mov  theme_face, eax
+    mov  theme_hint, HINT_DARK
+    jmp  tr_done
+
+tr_light:
+    mov  theme_bg, COLOR_WINDOW_1
+    mov  theme_face, COLOR_BTNFACE_1
+    mov  theme_hint, HINT_LIGHT
+
+tr_done:
+    mov  eax, theme_dark
+    ret
+theme_refresh ENDP
 
 ; ---------------------------------------------------------------------------
 ; theme_apply(HWND hwnd) -> void. Dress one top-level window with a rounded
