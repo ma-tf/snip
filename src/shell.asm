@@ -287,9 +287,23 @@ wm_combo:
     cmp  edx, IDC_MODE
     jne  wm_combo_delay
     mov  [ecx].App.mode, eax
-    ret
+    jmp  wm_combo_repaint
 wm_combo_delay:
     mov  [ecx].App.delay, eax
+
+wm_combo_repaint:
+    ; A ComboBox repaints its selection field itself when the selection changes,
+    ; outside WM_PAINT. ui.asm's ui_draw_item now re-targets that face draw
+    ; through a whole-client DC, so it comes out identical to the WM_PAINT one;
+    ; this invalidate is only a safety net so a repaint is queued regardless.
+    ; The rect is the visible face - the combo's whole client, 52x28 - not the
+    ; whole control, so nothing below the face is swept up in it.
+    mov  rc.left, 0
+    mov  rc.top, 0
+    mov  rc.right, COMBO_FACE_W
+    mov  rc.bottom, COMBO_FACE_VIS
+    INVOKE InvalidateRect, lParam, ADDR rc, 0
+    xor  eax, eax
     ret
 
 ; The system theme changed (WM_SETTINGCHANGE). Re-read it; if it differs from

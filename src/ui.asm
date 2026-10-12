@@ -61,6 +61,7 @@ ui_round_rect     PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, 
 ui_draw_button    PROTO STDCALL :DWORD
 ui_draw_combo     PROTO STDCALL :DWORD
 ui_paint_combo    PROTO STDCALL :DWORD
+ui_paint_combo_dc PROTO STDCALL :DWORD, :DWORD
 ui_draw_glyph_id  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 ui_draw_icon      PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 ui_draw_glyph     PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
@@ -85,6 +86,8 @@ UiSlot STRUCT
     hwnd    DWORD ?
     kind    DWORD ?
     ambient DWORD ?
+    glyph   DWORD ?   ; UI_GLYPH_*: the last face glyph drawn, a fallback for the
+                      ; ComboBox's mid-selection field repaint
 UiSlot ENDS
 UI_MAX_CONTROLS EQU 16
 
@@ -468,6 +471,8 @@ ui_subclass_proc ENDP
 ; drop-down list row.
 ; ---------------------------------------------------------------------------
 ui_draw_item PROC USES esi parent:DWORD, dis:DWORD
+    LOCAL dch:DWORD
+
     mov  esi, dis
     test esi, esi
     jz   udi_done
@@ -480,7 +485,37 @@ ui_draw_item PROC USES esi parent:DWORD, dis:DWORD
 udi_button:
     INVOKE ui_draw_button, esi
     jmp  udi_done
+
 udi_combo:
+    ; An open-list row (itemID >= 0) draws straight into the DC the ComboBox
+    ; supplied: that DC is clipped to the row's rcItem, which is exactly what
+    ; ui_draw_combo fills, so it needs no re-targeting.
+    ;
+    ; The selection *field* is different. Its DC (itemID == -1, or ODS_COMBOBOXEDIT)
+    ; is clipped to the field rect - the face minus the drop-down arrow button -
+    ; but ucc_face lays the face out across the whole client, so drawing through
+    ; that clip paints its fill and border over only the left ~34px of the face
+    ; ui_paint_combo already drew. Anything spanning the client loses its left
+    ; edge, and the focus ring loses the most: only a focused whole-client pass
+    ; draws one, so choosing an item leaves a ring with its left side wiped - the
+    ; broken "focus border" box across the drop-down. Repaint the field through
+    ; our own full-client DC instead so this face is identical to the WM_PAINT
+    ; one. See ui_paint_combo_dc.
+    mov  eax, [esi].DRAWITEMSTRUCT.itemID
+    cmp  eax, 0FFFFFFFFh
+    je   udi_combo_face
+    test [esi].DRAWITEMSTRUCT.itemState, ODS_COMBOBOXEDIT
+    jz   udi_combo_row
+udi_combo_face:
+    INVOKE GetDC, [esi].DRAWITEMSTRUCT.hwndItem
+    test eax, eax
+    jz   udi_done                    ; no DC: leave the face to the next WM_PAINT
+    mov  dch, eax
+    INVOKE ui_paint_combo_dc, [esi].DRAWITEMSTRUCT.hwndItem, dch
+    INVOKE ReleaseDC, [esi].DRAWITEMSTRUCT.hwndItem, dch
+    jmp  udi_done
+
+udi_combo_row:
     INVOKE ui_draw_combo, esi
 udi_done:
     xor  eax, eax
@@ -782,7 +817,7 @@ ui_draw_button ENDP
 ; tint and a 3px accent bar.
 ;
 ; The Shell's own list rows arrive here from the parent's WM_DRAWITEM. The face
-; arrives from ui_paint_combo's synthetic DRAWITEMSTRUCT, because the base
+; arrives from ui_paint_combo_dc's synthetic DRAWITEMSTRUCT, because the base
 ; ComboBox's classic border and arrow button are only removed by painting the
 ; whole client ourselves.
 ;
@@ -804,6 +839,7 @@ ui_draw_combo PROC USES ebx esi edi dis:DWORD
     LOCAL fillCr:DWORD
     LOCAL isFace:DWORD
     LOCAL facePainted:DWORD
+    LOCAL slot:DWORD
     LOCAL sel:DWORD
     LOCAL glyph:DWORD
     LOCAL w:DWORD
@@ -819,6 +855,7 @@ ui_draw_combo PROC USES ebx esi edi dis:DWORD
     mov  gfx, 0
     mov  ambientRole, UI_AMBIENT_BG
     mov  facePainted, 0
+    mov  slot, 0
 
     ; rcItem -> rc.
     mov  eax, [esi].DRAWITEMSTRUCT.rcItem.left
@@ -839,6 +876,7 @@ ui_draw_combo PROC USES ebx esi edi dis:DWORD
     add  eax, OFFSET ui_slots
     mov  ecx, [eax].UiSlot.ambient
     mov  ambientRole, ecx
+    mov  slot, eax
 ucc_slot_done:
 
     INVOKE theme_is_dark
@@ -876,7 +914,10 @@ ucc_face:
     ; arrow area showing the ui_paint_combo face beneath (and put its chevron at
     ; a different x): the doubled drop-down. With the client rect, the WM_DRAWITEM
     ; face and ui_paint_combo's face are identical, so whichever paints last the
-    ; result is one face and one chevron.
+    ; result is one face and one chevron - but only if both draw through a DC
+    ; that spans the whole client. The ComboBox's own face DC does not; it is
+    ; clipped to the field rect. ui_draw_item therefore re-targets that face
+    ; through our own DC. See ui_paint_combo_dc.
     mov  eax, [esi].DRAWITEMSTRUCT.hwndItem
     lea  ecx, rc
     INVOKE GetClientRect, eax, ecx
@@ -885,9 +926,27 @@ ucc_face:
     INVOKE SendMessageW, [esi].DRAWITEMSTRUCT.hwndItem, CB_GETCURSEL, 0, 0
     mov  sel, eax
     cmp  eax, -1
-    je   ucc_paint
+    je   ucc_face_cached
     INVOKE SendMessageW, [esi].DRAWITEMSTRUCT.hwndItem, CB_GETLBTEXT, sel, ADDR buf
     INVOKE SendMessageW, [esi].DRAWITEMSTRUCT.hwndItem, CB_GETITEMDATA, sel, 0
+    mov  glyph, eax
+    ; The ComboBox repaints its field mid-selection, when CB_GETCURSEL can be -1
+    ; or CB_GETITEMDATA can come back 0 / CB_ERR: remember the glyph per control
+    ; and fall back to it so the face never flashes blank (a white box).
+    cmp  eax, UI_GLYPH_RECT
+    jb   ucc_face_cached
+    cmp  eax, UI_GLYPH_CLOCK
+    ja   ucc_face_cached
+    cmp  slot, 0
+    je   ucc_paint
+    mov  ecx, slot
+    mov  [ecx].UiSlot.glyph, eax
+    jmp  ucc_paint
+ucc_face_cached:
+    cmp  slot, 0
+    je   ucc_paint
+    mov  ecx, slot
+    mov  eax, [ecx].UiSlot.glyph
     mov  glyph, eax
     jmp  ucc_paint
 
@@ -1106,22 +1165,49 @@ ucc_text_done:
 ui_draw_combo ENDP
 
 ; ---------------------------------------------------------------------------
-; ui_paint_combo(hwnd) -> void. Paints a drop-down's closed face, in place of the
-; ComboBox's own rendering. The base control draws a classic 3-D border (a grey
-; edge on the top/left of the client) and a drop-down arrow button that
-; owner-draw's rcItem never covers; taking the whole paint ourselves removes both.
-; A synthetic DRAWITEMSTRUCT (itemID == -1, the selection field, focused when the
-; control has focus) reuses ui_draw_combo, so all the face drawing stays in one
-; place. Called from ui_subclass_proc's WM_PAINT.
+; ui_paint_combo(hwnd) -> void. The subclass's WM_PAINT: BeginPaint (which
+; validates the update region) and paint the whole client through
+; ui_paint_combo_dc, then EndPaint.
 ; ---------------------------------------------------------------------------
-ui_paint_combo PROC USES esi hwnd:DWORD
+ui_paint_combo PROC hwnd:DWORD
     LOCAL ps:PAINTSTRUCT
-    LOCAL dis:DRAWITEMSTRUCT
 
     INVOKE BeginPaint, hwnd, ADDR ps
-    mov  esi, eax                     ; hDC
-    test esi, esi
+    test eax, eax
     jz   upc_done
+    INVOKE ui_paint_combo_dc, hwnd, eax
+    INVOKE EndPaint, hwnd, ADDR ps
+upc_done:
+    ret
+ui_paint_combo ENDP
+
+; ---------------------------------------------------------------------------
+; ui_paint_combo_dc(hwnd, hdc) -> void. Paints a drop-down's closed face - the
+; whole client, its glyph, chevron and focus ring - into an explicit DC, as a
+; synthetic DRAWITEMSTRUCT (itemID == -1, the selection field, focused when the
+; control has focus). The base ComboBox draws a classic 3-D border (a grey edge
+; on the top/left of the client) and a drop-down arrow button that owner-draw's
+; rcItem never covers; taking the whole paint ourselves removes both, and
+; reusing ui_draw_combo keeps all the face drawing in one place.
+;
+; Two callers, and they must agree:
+;
+;   * ui_paint_combo, from the subclass's WM_PAINT, with BeginPaint's DC; and
+;   * ui_draw_item, for the ComboBox's own face WM_DRAWITEM.
+;
+; The second caller must not draw into the DC the ComboBox supplies. That DC is
+; clipped to the *field* rect - the face minus the drop-down arrow button -
+; while the face is laid out across the whole client. Painting a whole-client
+; face through the field clip lays its fill and border over only the left ~34px
+; of what WM_PAINT already drew there, slicing the left edge off anything that
+; spans the client. The focus ring shows it worst: only a focused whole-client
+; pass draws one, so a selection leaves a ring with its left side wiped - the
+; broken "focus border" box across a just-chosen drop-down. ui_draw_item hands
+; this function its own full-client DC instead, so both callers are identical,
+; which is exactly what ucc_face's whole-client geometry assumes.
+; ---------------------------------------------------------------------------
+ui_paint_combo_dc PROC USES esi hwnd:DWORD, hdc:DWORD
+    LOCAL dis:DRAWITEMSTRUCT
 
     mov  dis.CtlType, ODT_COMBOBOX
     mov  dis.CtlID, 0
@@ -1130,21 +1216,20 @@ ui_paint_combo PROC USES esi hwnd:DWORD
     mov  dis.itemState, 0
     INVOKE GetFocus
     cmp  eax, hwnd
-    jne  upc_nofocus
+    jne  updc_nofocus
     mov  dis.itemState, ODS_FOCUS
-upc_nofocus:
+updc_nofocus:
     mov  eax, hwnd
     mov  dis.hwndItem, eax
-    mov  dis.hDC, esi
+    mov  eax, hdc
+    mov  dis.hDC, eax
     lea  eax, dis.rcItem
     INVOKE GetClientRect, hwnd, eax
     mov  dis.itemData, 0
 
     INVOKE ui_draw_combo, ADDR dis
-    INVOKE EndPaint, hwnd, ADDR ps
-upc_done:
     ret
-ui_paint_combo ENDP
+ui_paint_combo_dc ENDP
 
 ; ---------------------------------------------------------------------------
 ; ui_tint(accent, base, pct) -> COLORREF. base blended pct percent toward accent,

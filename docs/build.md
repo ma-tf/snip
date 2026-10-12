@@ -132,8 +132,10 @@ Snip (ticket 03). The Editor carries a toolbar whose New, Copy, and Save are liv
 and Save writes a PNG through the standard dialog — both encoded by WIC straight from the
 DIB. Pen, Highlighter, Eraser, and Undo are live too (ticket 06): strokes are held as a
 command log and replayed onto the Working bitmap with GDI+, the Eraser removes whole strokes,
-and Undo reverses the last operation. Sizes: `debug` **29,696 B** plus `snip.pdb`; `size`
-(Crinkler) **9,142 B**.
+and Undo reverses the last operation. Sizes: `debug` **35,840 B** plus `snip.pdb`; `size`
+(Crinkler) **11,016 B** — both remeasured 2026-10-12, well up from the 29,696 B / 9,142 B written
+here at ticket 06: the Fluent control skin (tickets 01–04), the drop-down glyph cache, and the
+face-repaint fix (see [`shell.md`](shell.md)) together cost +512 B debug, +82 B compressed.
 
 ## Debugging
 

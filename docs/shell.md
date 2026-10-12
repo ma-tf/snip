@@ -61,6 +61,18 @@ is an addition beyond the Win11 reference — it advertises the `Alt+N` accelera
   border and a drop-down arrow button that owner-draw's `rcItem` never covers. `ui_paint_combo`
   (in `ui.asm`) takes the whole `WM_PAINT` for a combo, so the control never draws its face;
   `WM_NCPAINT` is suppressed for the same reason.
+- **The face's `WM_DRAWITEM` DC is clipped to the field rect, not the client.** A
+  `CBS_DROPDOWNLIST` hands its selection field a DC cropped to the field — the face *minus* the
+  drop-down arrow button, so ~34px of the 52px face — while `ui_draw_combo` lays the face out
+  across the whole client (that is how the arrow area gets skinned, and how the `WM_DRAWITEM`
+  face and `ui_paint_combo`'s face are kept identical). Painting a whole-client face through the
+  field clip draws its fill and border over only the left ~34px of what `WM_PAINT` already
+  painted, wiping the left edge of anything that spans the client. Only the focus ring notices:
+  it is the one element a *focused* whole-client pass draws that the field pass does not (the
+  field pass arrives with `ODS_FOCUS` clear), so choosing an item left a ring with its left side
+  sliced off — a broken "focus border" box across a just-chosen drop-down, white in the light
+  theme because the fill that carved it is the face's own `#FFFFFF`. `ui_draw_item` repaints the
+  field through its own full-client DC (`ui_paint_combo_dc`) so both face passes are identical.
 - **A narrower closed face needs a wider pop-up.** `CB_SETDROPPEDWIDTH` (`0x0160`) widens only
   the open list. Without it the list would be as narrow as the face and clip the labels.
 - **A plain `ComboBox` needs `CBS_HASSTRINGS`.** With `CBS_OWNERDRAWFIXED` and no
