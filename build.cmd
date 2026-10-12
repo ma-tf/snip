@@ -114,8 +114,12 @@ rem /TRANSFORM:CALLS is a reversible byte transform applied before compression;
 rem /ORDERTRIES reorders the parts to help the model: both cost nothing at
 rem runtime and take the file from 2,858 to 2,696 bytes. ORDERTRIES is kept
 rem modest (2,000, ~7s); 50,000 buys only 8 more bytes for a 69s build.
+rem COMPMODE is FAST, not SLOW: with the Fluent control skin linked in, Crinkler
+rem 3.0b crashes in its "Optimizing hash table size" step under SLOW (reproducibly,
+rem and regardless of TRANSFORM/TEXTPART/HASHTRIES). FAST completes the same build
+rem and is a few bytes smaller here, so it is the working mode.
 "%CRINKLER%" /OUT:"%OUT%\snip.exe" /SUBSYSTEM:WINDOWS /ENTRY:WinMainASM /NODEFAULTLIB ^
-    /COMPMODE:SLOW /TRANSFORM:CALLS /ORDERTRIES:2000 ^
+    /COMPMODE:FAST /TRANSFORM:CALLS /ORDERTRIES:2000 ^
     @"%OUT%\objs.rsp" %LIBS%
 if errorlevel 1 (
     echo error: Crinkler failed

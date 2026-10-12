@@ -1,10 +1,14 @@
 ; shell.asm
 ; The Shell window: the app's main window and the one place a snip starts.
 ;
-; A New button and two ComboBoxEx drop-downs (mode and Delay), each row carrying
-; a 16x16 icon drawn at runtime with GDI into a shared image list - no icon
-; resources, so no .rsrc section and no resource compiler. Either drop-down
-; records its choice in App; New starts a Snipping session through select.asm.
+; A New button and two drop-downs (mode and Delay). Both controls are
+; owner-drawn by ui.asm (ADR-0004): the buttons carry BS_OWNERDRAW and the
+; drop-downs are plain ComboBox controls with CBS_OWNERDRAWFIXED, so they take
+; the Fluent look and go dark on a dark system. Each row carries a 16x16 glyph
+; that ui.asm draws directly - no image list and no icon resources, so no .rsrc
+; section and no resource compiler. shell.asm tags each row with a UI_GLYPH_* id
+; through CB_SETITEMDATA. Either drop-down records its choice in App; New starts
+; a Snipping session through select.asm.
 ;
 ; The window is resizable. The controls are fixed at the top; the space below
 ; them carries a centred hint that advertises Alt+N, laid out in WM_SIZE. The
@@ -23,19 +27,15 @@ PUBLIC shell_create
 ; Forward declarations so INVOKE can reach callees defined later in the file.
 shell_on_create  PROTO STDCALL :DWORD, :DWORD
 shell_layout     PROTO STDCALL :DWORD
-shell_combo_item PROTO STDCALL :DWORD, :DWORD, :DWORD
-shell_make_icons PROTO STDCALL
+shell_combo_add  PROTO STDCALL :DWORD, :DWORD, :DWORD
 shell_focus_combo PROTO STDCALL :DWORD, :DWORD
-smi_clear        PROTO STDCALL :DWORD
-smi_hollow       PROTO STDCALL :DWORD
-smi_publish      PROTO STDCALL :DWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
 ; Statics. Module-private: the Shell is a singleton, so its window class can
 ; live here rather than in App.
 ;
-; Strings and glyph geometry are read-only, so they live in .const (.rdata);
-; shell_wc and shell_icons are zero-initialised and live in .data? (.bss).
+; Strings and glyph ids are read-only, so they live in .const (.rdata);
+; shell_wc and shell_hint are zero-initialised and live in .data? (.bss).
 ; Neither costs file bytes, which is what keeps the image small. See
 ; docs/architecture.md.
 ; ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ smi_publish      PROTO STDCALL :DWORD, :DWORD
 shell_class   DW 'S','n','i','p','S','h','e','l','l',0
 shell_title   DW 'S','n','i','p','p','i','n','g',' ','T','o','o','l',0
 cls_button    DW 'B','u','t','t','o','n',0
-cls_combo     DW 'C','o','m','b','o','B','o','x','E','x','3','2',0
+cls_combo     DW 'C','o','m','b','o','B','o','x',0
 cls_static    DW 'S','t','a','t','i','c',0
 
 text_new      DW 'N','e','w',0
@@ -62,35 +62,18 @@ delay_3       DW '3',' ','s','e','c','o','n','d','s',0
 delay_5       DW '5',' ','s','e','c','o','n','d','s',0
 delay_10      DW '1','0',' ','s','e','c','o','n','d','s',0
 
-; Image-list order. Both drop-downs share one list, so the indices are global.
-ICON_RECT     EQU 0
-ICON_WINDOW   EQU 1
-ICON_FULL     EQU 2
-ICON_FREE     EQU 3
-ICON_CLOCK    EQU 4
-ICON_COLORKEY EQU 00FF00FFh        ; magenta: never drawn, the transparency key
-
-ICON_SIZE     EQU 16
-
-; The scratch 32bpp DIB every glyph is drawn into, then masked on the colour key.
-smi_bmi       BITMAPINFOHEADER <40, ICON_SIZE, ICON_SIZE, 1, 32, BI_RGB, 0, 0, 0, 0, 0>
-
-; Glyph geometry, in the 16x16 cell. Polylines only, so shell_make_icons needs
-; no struct arrays beyond POINT.
-pts_tl        POINT <1,5>, <1,1>, <5,1>          ; full-screen corner brackets
-pts_tr        POINT <11,1>, <15,1>, <15,5>
-pts_br        POINT <15,11>, <15,15>, <11,15>
-pts_bl        POINT <5,15>, <1,15>, <1,11>
-pts_free      POINT <3,11>, <4,6>, <8,3>, <12,4>, <9,9>, <5,9>, <6,12>
-pts_hand_v    POINT <8,8>, <8,5>                  ; clock: minute hand up
-pts_hand_h    POINT <8,8>, <11,10>                ; clock: hour hand out
+; The drop-down geometry. The face is the selection field; the create-time height
+; is the *whole* dropped-down control, so COMBO_DROP_H counts the face's visible
+; height (COMBO_FACE_VIS, which matches the New button) plus the list. The list
+; area is four rows tall with a hair of padding and no scrollbar.
+COMBO_FACE_H   EQU 22           ; the selection-field item height
+COMBO_FACE_VIS EQU 28           ; the face's visible height (item height + border)
+COMBO_ROW_H    EQU 28
+COMBO_DROP_H   EQU COMBO_FACE_VIS + COMBO_ROW_H*4 + 4
 
 .data?
 shell_wc      WNDCLASSEXW <>
-shell_icons   DWORD ?            ; HIMAGELIST, ours to destroy. Module-private
-                                 ; because the Shell is a singleton.
 shell_hint    DWORD ?            ; the hint Static, laid out in WM_SIZE
-sfc_in        INPUT 4 DUP(<>)    ; ticket 12: the Alt+Down SendInput batch
 shell_theme   DWORD ?            ; the theme flag this window last drew (live update)
 
 ; The Shell is resizable and maximizable. The three controls stay fixed at the
@@ -334,13 +317,6 @@ wm_drawitem:
     ret
 
 wm_destroy:
-    ; The image list is ours, not the controls': destroy it before we quit.
-    mov  eax, shell_icons
-    test eax, eax
-    jz   wm_destroy_quit
-    INVOKE ImageList_Destroy, shell_icons
-    mov  shell_icons, 0
-wm_destroy_quit:
     INVOKE PostQuitMessage, 0
     xor  eax, eax
     ret
@@ -350,45 +326,18 @@ shell_wndproc ENDP
 ; shell_focus_combo(hwnd, id) -> eax 0. Alt+M / Alt+D (ticket 12): put focus in
 ; the drop-down named by id, then drop its list.
 ;
-; Opening the list of a ComboBoxEx32 needs a *real* Alt+Down. Three other routes
-; were tried against the running app and all failed silently:
-;
-;   - CB_SHOWDROPDOWN:  the Ex control does not honour the base class's message.
-;   - CB_GETCOMBOBOXINFO: fails on the Ex control, so the inner combo is not
-;                       reachable that way either.
-;   - WM_KEYDOWN/VK_DOWN: a bare Down navigates a list that is already open; on a
-;                       closed CBS_DROPDOWNLIST it does not open one.
-;
-; What does work (verified by hand) is Alt+Down, and the reason a synthesised
-; message cannot imitate it is that the combo's WM_SYSKEYDOWN handler opens or
-; closes the list "depending on which arrow key the user pressed" - it reads real
-; keyboard state. SendInput is therefore the only faithful way: it makes the OS
-; generate the keystroke with correct state, which is what the user pressed.
-;
-; The control is focused first so the keystroke lands on it, and the input is
-; sent with SendInput rather than PostMessage because only the former produces
-; genuine keyboard state. The Alt press/release is scoped to VK_MENU so no other
-; window sees a stuck modifier.
+; A plain ComboBox (ticket 03) honours CB_SHOWDROPDOWN, so opening the list is
+; just focus plus that message. The old ComboBoxEx32 ignored it and needed a
+; synthesised Alt+Down through SendInput; that whole path is gone with the
+; control. Arrow keys still navigate the open list and Escape closes it, both
+; supplied by IsDialogMessageW, exactly as before.
 ; ---------------------------------------------------------------------------
-shell_focus_combo PROC USES esi hwnd:DWORD, id:DWORD
+shell_focus_combo PROC hwnd:DWORD, id:DWORD
     INVOKE GetDlgItem, hwnd, id
-    mov  esi, eax
     test eax, eax
     jz   sfc_done
-    INVOKE SetFocus, esi
-
-    ; Alt down, Down down, Down up, Alt up - one SendInput batch.
-    mov  sfc_in[0 * SIZEOF INPUT].type_, INPUT_KEYBOARD
-    mov  sfc_in[0 * SIZEOF INPUT].ki.wVk, VK_MENU
-    mov  sfc_in[1 * SIZEOF INPUT].type_, INPUT_KEYBOARD
-    mov  sfc_in[1 * SIZEOF INPUT].ki.wVk, VK_DOWN
-    mov  sfc_in[2 * SIZEOF INPUT].type_, INPUT_KEYBOARD
-    mov  sfc_in[2 * SIZEOF INPUT].ki.wVk, VK_DOWN
-    mov  sfc_in[2 * SIZEOF INPUT].ki.dwFlags, KEYEVENTF_KEYUP
-    mov  sfc_in[3 * SIZEOF INPUT].type_, INPUT_KEYBOARD
-    mov  sfc_in[3 * SIZEOF INPUT].ki.wVk, VK_MENU
-    mov  sfc_in[3 * SIZEOF INPUT].ki.dwFlags, KEYEVENTF_KEYUP
-    INVOKE SendInput, 4, OFFSET sfc_in, SIZEOF INPUT
+    INVOKE SetFocus, eax
+    INVOKE SendMessageW, eax, CB_SHOWDROPDOWN, 1, 0
 sfc_done:
     xor  eax, eax
     ret
@@ -415,11 +364,6 @@ shell_on_create PROC USES ebx esi hwnd:DWORD, app:DWORD
     INVOKE GetStockObject, DEFAULT_GUI_FONT
     mov  font, eax
 
-    ; One image list of 16x16 glyphs, shared by both drop-downs. Built before
-    ; the controls so each item can name its image.
-    INVOKE shell_make_icons
-    mov  shell_icons, eax
-
     ; --- New button: 12,12 64x28, id IDC_NEW --------------------------------
     ; BS_OWNERDRAW: ui.asm paints it, a plain button with a leading "+" and label.
     mov  edx, [esi].App.hInstance
@@ -427,29 +371,36 @@ shell_on_create PROC USES ebx esi hwnd:DWORD, app:DWORD
     mov  hCtl, eax
     INVOKE ui_attach, hCtl, UI_KIND_BUTTON_GLYPH, UI_AMBIENT_BG
 
-    ; --- mode drop-down: 84,12 150x100, id IDC_MODE -------------------------
+    ; --- mode drop-down: 84,12 150xCOMBO_DROP_H, id IDC_MODE -----------------
+    ; A plain ComboBox with CBS_OWNERDRAWFIXED: ui.asm paints the face and every
+    ; row. WM_SETFONT and CB_SETITEMHEIGHT fix the row and face heights before
+    ; the rows are added; each row's glyph id is stashed with CB_SETITEMDATA.
     mov  edx, [esi].App.hInstance
-    INVOKE CreateWindowExW, 0, OFFSET cls_combo, 0, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR CBS_DROPDOWNLIST, 84, 12, 150, 100, ebx, IDC_MODE, edx, 0
+    INVOKE CreateWindowExW, 0, OFFSET cls_combo, 0, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR CBS_DROPDOWNLIST OR CBS_OWNERDRAWFIXED OR CBS_HASSTRINGS, 84, 12, 150, COMBO_DROP_H, ebx, IDC_MODE, edx, 0
     mov  hCtl, eax
-    INVOKE SendMessageW, hCtl, CBEM_SETIMAGELIST, 0, shell_icons
-    INVOKE shell_combo_item, hCtl, OFFSET mode_rect, ICON_RECT
-    INVOKE shell_combo_item, hCtl, OFFSET mode_win, ICON_WINDOW
-    INVOKE shell_combo_item, hCtl, OFFSET mode_full, ICON_FULL
-    INVOKE shell_combo_item, hCtl, OFFSET mode_free, ICON_FREE
-    INVOKE SendMessageW, hCtl, CB_SETCURSEL, 0, 0
     INVOKE SendMessageW, hCtl, WM_SETFONT, font, 1
+    INVOKE SendMessageW, hCtl, CB_SETITEMHEIGHT, -1, COMBO_FACE_H
+    INVOKE SendMessageW, hCtl, CB_SETITEMHEIGHT, 0, COMBO_ROW_H
+    INVOKE ui_attach, hCtl, UI_KIND_COMBO, UI_AMBIENT_BG
+    INVOKE shell_combo_add, hCtl, OFFSET mode_rect, UI_GLYPH_RECT
+    INVOKE shell_combo_add, hCtl, OFFSET mode_win, UI_GLYPH_WINDOW
+    INVOKE shell_combo_add, hCtl, OFFSET mode_full, UI_GLYPH_FULL
+    INVOKE shell_combo_add, hCtl, OFFSET mode_free, UI_GLYPH_FREE
+    INVOKE SendMessageW, hCtl, CB_SETCURSEL, 0, 0
 
-    ; --- Delay drop-down: 242,12 150x100, id IDC_DELAY ----------------------
+    ; --- Delay drop-down: 242,12 150xCOMBO_DROP_H, id IDC_DELAY --------------
     mov  edx, [esi].App.hInstance
-    INVOKE CreateWindowExW, 0, OFFSET cls_combo, 0, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR CBS_DROPDOWNLIST, 242, 12, 150, 100, ebx, IDC_DELAY, edx, 0
+    INVOKE CreateWindowExW, 0, OFFSET cls_combo, 0, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR CBS_DROPDOWNLIST OR CBS_OWNERDRAWFIXED OR CBS_HASSTRINGS, 242, 12, 150, COMBO_DROP_H, ebx, IDC_DELAY, edx, 0
     mov  hCtl, eax
-    INVOKE SendMessageW, hCtl, CBEM_SETIMAGELIST, 0, shell_icons
-    INVOKE shell_combo_item, hCtl, OFFSET delay_none, ICON_CLOCK
-    INVOKE shell_combo_item, hCtl, OFFSET delay_3, ICON_CLOCK
-    INVOKE shell_combo_item, hCtl, OFFSET delay_5, ICON_CLOCK
-    INVOKE shell_combo_item, hCtl, OFFSET delay_10, ICON_CLOCK
-    INVOKE SendMessageW, hCtl, CB_SETCURSEL, 0, 0
     INVOKE SendMessageW, hCtl, WM_SETFONT, font, 1
+    INVOKE SendMessageW, hCtl, CB_SETITEMHEIGHT, -1, COMBO_FACE_H
+    INVOKE SendMessageW, hCtl, CB_SETITEMHEIGHT, 0, COMBO_ROW_H
+    INVOKE ui_attach, hCtl, UI_KIND_COMBO, UI_AMBIENT_BG
+    INVOKE shell_combo_add, hCtl, OFFSET delay_none, UI_GLYPH_CLOCK
+    INVOKE shell_combo_add, hCtl, OFFSET delay_3, UI_GLYPH_CLOCK
+    INVOKE shell_combo_add, hCtl, OFFSET delay_5, UI_GLYPH_CLOCK
+    INVOKE shell_combo_add, hCtl, OFFSET delay_10, UI_GLYPH_CLOCK
+    INVOKE SendMessageW, hCtl, CB_SETCURSEL, 0, 0
 
     ; --- hint: centred in the space below the control row, id IDC_HINT -------
     ; Created at a placeholder size; WM_SIZE (which follows WM_CREATE) gives it
@@ -494,185 +445,17 @@ sl_done:
 shell_layout ENDP
 
 ; ---------------------------------------------------------------------------
-; shell_combo_item(hcombo, pszText, imageIndex) -> eax = new index or CB_ERR.
-; Adds one ComboBoxEx row carrying text and an image-list index. The
-; COMBOBOXEXITEMW lives on this frame; SendMessageW copies what it needs.
+; shell_combo_add(hcombo, pszText, glyphId) -> void. Adds one owner-draw row:
+; the text, then the UI_GLYPH_* id ui.asm will draw, stashed with CB_SETITEMDATA.
 ; ---------------------------------------------------------------------------
-shell_combo_item PROC hcombo:DWORD, pszText:DWORD, imageIndex:DWORD
-    LOCAL item:COMBOBOXEXITEMW
-
-    mov  item.fMask, CBEIF_TEXT OR CBEIF_IMAGE OR CBEIF_SELECTEDIMAGE
-    mov  item.iItem, 0FFFFFFFFh           ; append
-    mov  eax, pszText
-    mov  item.pszText, eax
-    mov  item.cchTextMax, 0
-    mov  eax, imageIndex
-    mov  item.iImage, eax
-    mov  item.iSelectedImage, eax
-    mov  item.iOverlay, 0
-    mov  item.iIndent, 0
-    mov  item.lParam, 0
-
-    INVOKE SendMessageW, hcombo, CBEM_INSERTITEMW, 0, ADDR item
+shell_combo_add PROC USES ebx hcombo:DWORD, pszText:DWORD, glyphId:DWORD
+    mov  ebx, hcombo
+    INVOKE SendMessageW, ebx, CB_ADDSTRING, 0, pszText
+    cmp  eax, -1
+    je   sca_done
+    INVOKE SendMessageW, ebx, CB_SETITEMDATA, eax, glyphId
+sca_done:
     ret
-shell_combo_item ENDP
-
-; ---------------------------------------------------------------------------
-; shell_make_icons() -> HIMAGELIST in eax, or 0 if it could not be built.
-; Creates one 16x16 masked image list and draws the five drop-down glyphs into
-; it with GDI - no icon resources, so no .rsrc section. Each glyph is drawn into
-; a scratch 32bpp DIB over an ICON_COLORKEY background; smi_publish adds it with
-; that colour as the mask. The list is shared by both drop-downs; WM_DESTROY
-; destroys it.
-; ---------------------------------------------------------------------------
-shell_make_icons PROC
-    LOCAL himl:DWORD
-    LOCAL bits:DWORD
-    LOCAL hdcScr:DWORD
-    LOCAL hdcMem:DWORD
-    LOCAL hdib:DWORD
-    LOCAL oldbm:DWORD
-    LOCAL hpen:DWORD
-
-    mov  himl, 0
-    mov  hdcScr, 0
-    mov  hdcMem, 0
-    mov  hdib, 0
-    mov  oldbm, 0
-    mov  hpen, 0
-
-    ; himl = ImageList_Create(16, 16, ILC_COLOR24|ILC_MASK, 8, 1)
-    INVOKE ImageList_Create, ICON_SIZE, ICON_SIZE, ILC_COLOR24 OR ILC_MASK, 8, 1
-    mov  himl, eax
-    test eax, eax
-    jz   smi_done
-
-    ; hdcScr = GetDC(NULL); hdcMem = CreateCompatibleDC(hdcScr)
-    INVOKE GetDC, 0
-    mov  hdcScr, eax
-    INVOKE CreateCompatibleDC, hdcScr
-    mov  hdcMem, eax
-
-    ; hdib = CreateDIBSection(hdcScr, &smi_bmi, DIB_RGB_COLORS, &bits, 0, 0)
-    ; A DIB section, not CreateCompatibleBitmap: pinning 32bpp gives us the bits
-    ; pointer, so smi_clear can fill the background in memory rather than GDI.
-    INVOKE CreateDIBSection, hdcScr, OFFSET smi_bmi, DIB_RGB_COLORS, ADDR bits, 0, 0
-    mov  hdib, eax
-    INVOKE SelectObject, hdcMem, hdib
-    mov  oldbm, eax
-
-    ; the 1px black pen, selected for the run
-    INVOKE CreatePen, PS_SOLID, 1, 0
-    mov  hpen, eax
-    INVOKE SelectObject, hdcMem, hpen
-
-    ; --- icon 0: Rectangle -------------------------------------------------
-    INVOKE smi_clear, bits
-    INVOKE smi_hollow, hdcMem
-    INVOKE Rectangle, hdcMem, 2, 3, 14, 13
-    ; A bitmap may live in only one DC: deselect before smi_publish selects the
-    ; DIB into the image list, then reselect it for the next glyph.
-    INVOKE SelectObject, hdcMem, oldbm
-    INVOKE smi_publish, himl, hdib
-    INVOKE SelectObject, hdcMem, hdib
-
-    ; --- icon 1: Window (frame plus filled title bar) ----------------------
-    INVOKE smi_clear, bits
-    INVOKE smi_hollow, hdcMem
-    INVOKE Rectangle, hdcMem, 1, 2, 15, 14
-    INVOKE GetStockObject, BLACK_BRUSH
-    mov  edx, eax
-    INVOKE SelectObject, hdcMem, edx
-    INVOKE Rectangle, hdcMem, 1, 2, 15, 5
-    INVOKE SelectObject, hdcMem, oldbm
-    INVOKE smi_publish, himl, hdib
-    INVOKE SelectObject, hdcMem, hdib
-
-    ; --- icon 2: Full screen (four corner brackets) ------------------------
-    INVOKE smi_clear, bits
-    INVOKE smi_hollow, hdcMem
-    INVOKE Polyline, hdcMem, OFFSET pts_tl, 3
-    INVOKE Polyline, hdcMem, OFFSET pts_tr, 3
-    INVOKE Polyline, hdcMem, OFFSET pts_br, 3
-    INVOKE Polyline, hdcMem, OFFSET pts_bl, 3
-    INVOKE SelectObject, hdcMem, oldbm
-    INVOKE smi_publish, himl, hdib
-    INVOKE SelectObject, hdcMem, hdib
-
-    ; --- icon 3: Freeform (a lasso squiggle) -------------------------------
-    INVOKE smi_clear, bits
-    INVOKE smi_hollow, hdcMem
-    INVOKE Polyline, hdcMem, OFFSET pts_free, 7
-    INVOKE SelectObject, hdcMem, oldbm
-    INVOKE smi_publish, himl, hdib
-    INVOKE SelectObject, hdcMem, hdib
-
-    ; --- icon 4: Clock (dial plus two hands) -------------------------------
-    INVOKE smi_clear, bits
-    INVOKE smi_hollow, hdcMem
-    INVOKE Ellipse, hdcMem, 2, 2, 14, 14
-    INVOKE Polyline, hdcMem, OFFSET pts_hand_v, 2
-    INVOKE Polyline, hdcMem, OFFSET pts_hand_h, 2
-    INVOKE SelectObject, hdcMem, oldbm
-    INVOKE smi_publish, himl, hdib
-    INVOKE SelectObject, hdcMem, hdib
-
-smi_done:
-    ; restore the old bitmap, then free the DC before the still-selected pen
-    cmp  oldbm, 0
-    jz   smi_free_bmp
-    INVOKE SelectObject, hdcMem, oldbm
-smi_free_bmp:
-    cmp  hdib, 0
-    jz   smi_free_dc
-    INVOKE DeleteObject, hdib
-smi_free_dc:
-    cmp  hdcMem, 0
-    jz   smi_free_screen
-    INVOKE DeleteDC, hdcMem
-smi_free_screen:
-    cmp  hdcScr, 0
-    jz   smi_free_pen
-    INVOKE ReleaseDC, 0, hdcScr
-smi_free_pen:
-    cmp  hpen, 0
-    jz   smi_return
-    INVOKE DeleteObject, hpen
-smi_return:
-    mov  eax, himl
-    ret
-shell_make_icons ENDP
-
-; ---------------------------------------------------------------------------
-; smi_clear(bits) - fill the 16x16 DIB with ICON_COLORKEY. Done in memory, not
-; with a GDI brush: a selected-brush PatBlt left the DIB black. Leaf.
-; ---------------------------------------------------------------------------
-smi_clear PROC USES edi bits:DWORD
-    mov  edi, bits
-    mov  ecx, ICON_SIZE * ICON_SIZE
-    mov  eax, ICON_COLORKEY
-    rep  stosd
-    ret
-smi_clear ENDP
-
-; ---------------------------------------------------------------------------
-; smi_hollow(hdc) - select the stock hollow brush, so shapes are outlines.
-; ---------------------------------------------------------------------------
-smi_hollow PROC USES ebx hdc:DWORD
-    mov  ebx, hdc
-    INVOKE GetStockObject, NULL_BRUSH
-    mov  edx, eax
-    INVOKE SelectObject, ebx, edx
-    ret
-smi_hollow ENDP
-
-; ---------------------------------------------------------------------------
-; smi_publish(himl, hbm) - add the drawn glyph to the list, keying
-; ICON_COLORKEY out of the background.
-; ---------------------------------------------------------------------------
-smi_publish PROC himl:DWORD, hbm:DWORD
-    INVOKE ImageList_AddMasked, himl, hbm, ICON_COLORKEY
-    ret
-smi_publish ENDP
+shell_combo_add ENDP
 
 END

@@ -22,8 +22,8 @@ PUBLIC WinMainASM
 ; Read-only data. .const (.rdata) costs file bytes only for what it holds.
 ; ---------------------------------------------------------------------------
 .const
-; The ComboBoxEx class registration request, used once at process init.
-icce INITCOMMONCONTROLSEX <SIZEOF INITCOMMONCONTROLSEX, ICC_USEREX_CLASSES>
+; (No common-control class registration: the Shell's drop-downs are plain
+; ComboBox controls, a user32 class, so InitCommonControlsEx is not needed.)
 
 ; ---------------------------------------------------------------------------
 ; Mutable data. Zero-initialised, so .data? (.bss): no file bytes, the loader
@@ -50,11 +50,6 @@ WinMainASM PROC
     ; window exists: the palette must be ready before the window classes are
     ; registered. A failure leaves the plain light look.
     INVOKE theme_init
-
-    ; Register ComboBoxEx32 with comctl32, so shell.asm can create it. The
-    ; Shell is the only common control the app uses; a failure is not fatal,
-    ; the Shell just comes up without icons.
-    INVOKE InitCommonControlsEx, OFFSET icce
 
     ; COM + the WIC factory, for Copy and Save As (ticket 05). One apartment and
     ; one factory for the life of the process. Ticket 11: this is the one
@@ -85,7 +80,7 @@ WinMainASM PROC
 
     ; Accelerator tables for the keyboard map (ticket 12). A failure is not
     ; fatal - the shortcuts simply do not fire - so the return is ignored, like
-    ; InitCommonControlsEx above. keys_free destroys them on the way out.
+    ; ui_init above. keys_free destroys them on the way out.
     INVOKE keys_init
 
     ; Message pump

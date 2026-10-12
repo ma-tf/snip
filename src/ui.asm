@@ -11,9 +11,21 @@
 ; WM_DRAWITEM routes here, and ui_draw_button lays down the Fluent surface: the
 ; ambient background, a rounded 4px rect, a hairline border, then the label. The
 ; pressed and disabled looks come from DRAWITEMSTRUCT.itemState, which the button
-; supplies without any subclassing; the hover and focus states (ticket 04)
-; do not. ui_attach records each control's kind and ambient surface, so this
+; supplies without any subclassing; the hover and focus states (ticket 04) do
+; not. ui_attach records each control's kind and ambient surface, so this
 ; module never has to know our control ids.
+;
+; Ticket 03 paints the drop-downs. A drop-down is a plain ComboBox with
+; CBS_OWNERDRAWFIXED | CBS_DROPDOWNLIST; the parent's WM_DRAWITEM arrives once
+; for the closed face (itemID == -1) and once per open row, and ui_draw_combo
+; paints both. Its row glyphs are drawn as vectors by ui_draw_glyph_id, keyed by
+; the id shell.asm stashed with CB_SETITEMDATA.
+;
+; Ticket 04 adds interaction. ui_attach subclasses each control; ui_subclass_proc
+; tracks the pointer with TrackMouseEvent(TME_LEAVE) and remembers the one hot
+; control in ui_hot. The hover surface is then chosen at draw time, and
+; ODS_FOCUS draws the Fluent focus ring. The subclasses never replace behaviour:
+; DefSubclassProc still receives every message.
 ;
 ; An icon button (UI_KIND_ICON) carries a Segoe Fluent Icons codepoint as its
 ; window text. ui_draw_icon renders that codepoint as the real font glyph when
@@ -41,16 +53,21 @@ PUBLIC ui_theme_changed
 ; Forward declarations so INVOKE reaches callees defined later in the file.
 ui_resolve_accent PROTO STDCALL
 ui_argb           PROTO STDCALL :DWORD
+ui_tint           PROTO STDCALL :DWORD, :DWORD, :DWORD
 ui_find           PROTO STDCALL :DWORD
 ui_ambient_color  PROTO STDCALL :DWORD
 ui_fill_rect      PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 ui_round_rect     PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 ui_draw_button    PROTO STDCALL :DWORD
+ui_draw_combo     PROTO STDCALL :DWORD
+ui_paint_combo    PROTO STDCALL :DWORD
+ui_draw_glyph_id  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 ui_draw_icon      PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 ui_draw_glyph     PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 ui_draw_poly      PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 ui_load_icon_font PROTO STDCALL
 ui_icon_path      PROTO STDCALL :DWORD
+ui_subclass_proc  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :DWORD, :DWORD
 
 ; A GDI+ RectF: four REALs. GdipDrawString takes its layout rect as floats, so
 ; ui_draw_icon converts the button's integer rect with the x87.
@@ -105,6 +122,7 @@ ICON_HILITE    EQU 0E7E6h
 ICON_ERASER    EQU 0E75Ch
 ICON_UNDO      EQU 0E7A7h
 ICON_ADD       EQU 0E710h       ; the "+" that prefixes the Editor's New button
+ICON_CHEVRON   EQU 0E70Dh       ; the drop-down's down chevron (ticket 03)
 
 ; The icon font. The .ttf is read from the Windows font directory into a private
 ; GDI+ collection (ui_load_icon_font); ICON_EM is 16.0f - the same size as the
@@ -128,6 +146,24 @@ ic_hl_b    POINT <4,10>,<2,14>,<8,14>,<4,10>             ; chisel tip
 ic_er_a    POINT <3,9>,<8,4>,<14,8>,<9,13>,<3,9>         ; eraser
 ic_undo_a  POINT <5,5>,<5,11>,<8,13>,<11,13>,<14,10>     ; undo curve
 ic_undo_b  POINT <5,5>,<3,7>,<5,9>                       ; undo arrowhead
+ic_chev_a  POINT <4,6>,<8,10>,<12,6>                     ; down chevron
+
+; Drop-down glyphs (ticket 03): the Shell's mode icons and the Delay clock,
+; moved here from shell.asm's image list. ui.asm draws them as vectors on the
+; same 16x16 grid as the tool icons; shell.asm tags each row with a UI_GLYPH_*
+; id through CB_SETITEMDATA, and the closed face looks its id up with
+; CB_GETITEMDATA. The clock dial is the one shape a polyline cannot trace, so it
+; is drawn with GdipDrawEllipseI.
+gl_rect   POINT <2,3>,<14,3>,<14,13>,<2,13>,<2,3>            ; Rectangle mode
+gl_win_a  POINT <1,2>,<15,2>,<15,14>,<1,14>,<1,2>            ; Window mode: frame
+gl_win_b  POINT <1,5>,<15,5>                                 ; ... and its title bar
+gl_full_1 POINT <1,5>,<1,1>,<5,1>                            ; Full screen: corners
+gl_full_2 POINT <11,1>,<15,1>,<15,5>
+gl_full_3 POINT <15,11>,<15,15>,<11,15>
+gl_full_4 POINT <5,15>,<1,15>,<1,11>
+gl_free   POINT <3,11>,<4,6>,<8,3>,<12,4>,<9,9>,<5,9>,<6,12>  ; Freeform lasso
+gl_hand_v POINT <8,8>,<8,5>                                  ; clock: minute hand
+gl_hand_h POINT <8,8>,<11,10>                                ; clock: hour hand
 
 ; Ambient surfaces a control's rounded corners reveal.
 AMB_BG_LIGHT   EQU 00FFFFFFh      ; the Shell's client (#FFFFFF)
@@ -148,12 +184,23 @@ WHITE          EQU 00FFFFFFh
 DISABLED_LIGHT EQU 009E9E9Eh
 DISABLED_DARK  EQU 006B6B6Bh
 
+; Drop-down and interaction tokens (tickets 03/04). HOVER_* is the pointer-over
+; surface, shared by buttons and combos. The combo face and its rows use the same
+; Fluent surface as a button; a selected row is SEL_MIX percent of the accent
+; blended into that surface, with a 3px accent bar.
+HOVER_LIGHT    EQU 00F5F5F5h
+HOVER_DARK     EQU 00323232h
+COMBO_FACE_LIGHT EQU 00FFFFFFh
+COMBO_FACE_DARK  EQU 002D2D2Dh
+SEL_MIX        EQU 22            ; % of the accent mixed into a selected row
+
 ; ---------------------------------------------------------------------------
 ; Mutable data. Zero-initialised, so .data? (.bss): no file bytes.
 ; ---------------------------------------------------------------------------
 .data?
 ui_ready      DWORD ?          ; GDI+ is up: the skin may draw
 ui_token      DWORD ?          ; the skin's own GdiplusStartup token
+ui_hot        DWORD ?          ; HWND: the control the pointer is over (ticket 04)
 ui_font_gdi   DWORD ?          ; HFONT: the button label, drawn with GDI for ClearType
 ui_accent     DWORD ?          ; COLORREF: the primary button's fill
 ui_iconcoll   DWORD ?          ; GpFontCollection*: the icons .ttf, loaded from file
@@ -228,13 +275,18 @@ ui_theme_changed ENDP
 
 ; ---------------------------------------------------------------------------
 ; ui_attach(control, kind, ambient) -> void. Records a control for the skin:
-; its drawing kind (UI_KIND_*) and the surface it sits on (UI_AMBIENT_*). The
-; control's own style already carries BS_OWNERDRAW / CBS_OWNERDRAWFIXED; the
-; subclassing that adds hover lands in ticket 04. Called from shell_on_create
-; and editor_on_create.
+; its drawing kind (UI_KIND_*) and the surface it sits on (UI_AMBIENT_*), then
+; subclasses it (ticket 04) so the skin sees the pointer for hover. The
+; control's own style already carries BS_OWNERDRAW / CBS_OWNERDRAWFIXED. Called
+; from shell_on_create and editor_on_create.
 ; ---------------------------------------------------------------------------
 ui_attach PROC USES ebx esi edi control:DWORD, kind:DWORD, ambient:DWORD
     mov  ebx, control
+
+    ; Ticket 04: watch the pointer. The subclass forwards everything it does not
+    ; use (DefSubclassProc), so no control behaviour changes.
+    INVOKE SetWindowSubclass, ebx, OFFSET ui_subclass_proc, 0, 0
+
     INVOKE ui_find, ebx
     cmp  eax, -1
     je   ua_add
@@ -297,17 +349,139 @@ uf_none:
 ui_find ENDP
 
 ; ---------------------------------------------------------------------------
+; ui_subclass_proc(hwnd, msg, wParam, lParam, id, ref) -> LRESULT. The
+; SetWindowSubclass procedure for each attached control (ticket 04). It tracks
+; the one hot control so the skin can draw the hover surface: the first
+; WM_MOUSEMOVE arms TrackMouseEvent(TME_LEAVE) and invalidates the control;
+; WM_MOUSELEAVE clears it. Every other message goes to DefSubclassProc, so no
+; control behaviour is replaced.
+; ---------------------------------------------------------------------------
+ui_subclass_proc PROC hwnd:DWORD, msg:DWORD, wParam:DWORD, lParam:DWORD, id:DWORD, ref:DWORD
+    LOCAL tme:TRACKMOUSEEVENT
+
+    cmp  msg, WM_MOUSEMOVE
+    je   usp_move
+    cmp  msg, WM_MOUSELEAVE
+    je   usp_leave
+    cmp  msg, WM_PAINT
+    je   usp_paint
+    cmp  msg, WM_ERASEBKGND
+    je   usp_erase
+    cmp  msg, WM_SETFOCUS
+    je   usp_focus
+    cmp  msg, WM_KILLFOCUS
+    je   usp_focus
+    cmp  msg, WM_NCPAINT
+    je   usp_ncpaint
+    jmp  usp_default
+
+; A drop-down's face is painted by the skin, not the ComboBox: the base control
+; draws a classic 3-D border and a drop-down arrow button that owner-draw never
+; covers. ui_paint_combo takes the whole paint (BeginPaint validates the update
+; region), so the control never draws its face. Buttons keep their WM_PAINT.
+usp_paint:
+    INVOKE ui_find, hwnd
+    cmp  eax, -1
+    je   usp_default
+    imul eax, eax, SIZEOF UiSlot
+    add  eax, OFFSET ui_slots
+    cmp  [eax].UiSlot.kind, UI_KIND_COMBO
+    jne  usp_default
+    INVOKE ui_paint_combo, hwnd
+    xor  eax, eax
+    ret
+
+; A drop-down erases nothing itself; the face paint fills the whole client.
+usp_erase:
+    INVOKE ui_find, hwnd
+    cmp  eax, -1
+    je   usp_default
+    imul eax, eax, SIZEOF UiSlot
+    add  eax, OFFSET ui_slots
+    cmp  [eax].UiSlot.kind, UI_KIND_COMBO
+    jne  usp_default
+    mov  eax, 1
+    ret
+
+; The control redraws its field (border and all) on a focus change, outside the
+; WM_PAINT path; let it, then invalidate so our face repaints over it.
+usp_focus:
+    INVOKE ui_find, hwnd
+    cmp  eax, -1
+    je   usp_default
+    imul eax, eax, SIZEOF UiSlot
+    add  eax, OFFSET ui_slots
+    cmp  [eax].UiSlot.kind, UI_KIND_COMBO
+    jne  usp_default
+    INVOKE DefSubclassProc, hwnd, msg, wParam, lParam
+    INVOKE InvalidateRect, hwnd, 0, 0
+    xor  eax, eax
+    ret
+
+; The ComboBox paints a classic 1px frame (a grey top/left edge) in WM_NCPAINT,
+; over our Fluent face. Suppress it for combos; our face already covers the frame
+; area, and the control has no real non-client area (window rect == client rect).
+usp_ncpaint:
+    INVOKE ui_find, hwnd
+    cmp  eax, -1
+    je   usp_default
+    imul eax, eax, SIZEOF UiSlot
+    add  eax, OFFSET ui_slots
+    cmp  [eax].UiSlot.kind, UI_KIND_COMBO
+    jne  usp_default
+    xor  eax, eax
+    ret
+
+usp_move:
+    mov  eax, hwnd
+    cmp  ui_hot, eax
+    je   usp_default              ; already hot: TME_LEAVE is armed
+    mov  ui_hot, eax
+    mov  tme.cbSize, SIZEOF TRACKMOUSEEVENT
+    mov  tme.dwFlags, TME_LEAVE
+    mov  eax, hwnd
+    mov  tme.hwndTrack, eax
+    mov  tme.dwHoverTime, 0
+    INVOKE TrackMouseEvent, ADDR tme
+    INVOKE InvalidateRect, hwnd, 0, 0
+    jmp  usp_default
+
+usp_leave:
+    mov  eax, hwnd
+    cmp  ui_hot, eax
+    jne  usp_leave_repaint
+    mov  ui_hot, 0
+usp_leave_repaint:
+    ; Always repaint on leave: even if another control has already claimed the
+    ; hot slot, this control still holds a stale hover fill until it redraws.
+    INVOKE InvalidateRect, hwnd, 0, 0
+    jmp  usp_default
+
+usp_default:
+    INVOKE DefSubclassProc, hwnd, msg, wParam, lParam
+    ret
+ui_subclass_proc ENDP
+
+; ---------------------------------------------------------------------------
 ; ui_draw_item(parent, dis) -> void. The single WM_DRAWITEM entry point, called
-; from shell_wndproc and editor_wndproc. Dispatches on CtlType; buttons now,
-; ComboBox rows in ticket 03.
+; from shell_wndproc and editor_wndproc. Dispatches on CtlType: a button, or a
+; drop-down list row.
 ; ---------------------------------------------------------------------------
 ui_draw_item PROC USES esi parent:DWORD, dis:DWORD
     mov  esi, dis
     test esi, esi
     jz   udi_done
-    cmp  [esi].DRAWITEMSTRUCT.CtlType, ODT_BUTTON
-    jne  udi_done
+    mov  eax, [esi].DRAWITEMSTRUCT.CtlType
+    cmp  eax, ODT_BUTTON
+    je   udi_button
+    cmp  eax, ODT_COMBOBOX
+    je   udi_combo
+    jmp  udi_done
+udi_button:
     INVOKE ui_draw_button, esi
+    jmp  udi_done
+udi_combo:
+    INVOKE ui_draw_combo, esi
 udi_done:
     xor  eax, eax
     ret
@@ -332,6 +506,7 @@ ui_draw_button PROC USES ebx esi edi dis:DWORD
     LOCAL textCr:DWORD
     LOCAL pressedCr:DWORD
     LOCAL disabledCr:DWORD
+    LOCAL hoverCr:DWORD
     LOCAL ambientCr:DWORD
     LOCAL glyph:DWORD
     LOCAL w:DWORD
@@ -385,6 +560,7 @@ udb_slot_done:
     mov  textCr, TEXT_DARK
     mov  pressedCr, PRESSED_DARK
     mov  disabledCr, DISABLED_DARK
+    mov  hoverCr, HOVER_DARK
     jmp  udb_colors_done
 udb_light:
     mov  fillCr, SURFACE_LIGHT
@@ -392,6 +568,7 @@ udb_light:
     mov  textCr, TEXT_LIGHT
     mov  pressedCr, PRESSED_LIGHT
     mov  disabledCr, DISABLED_LIGHT
+    mov  hoverCr, HOVER_LIGHT
 udb_colors_done:
 
     ; The primary button is accent-filled, white text, no border.
@@ -402,6 +579,20 @@ udb_colors_done:
     mov  borderCr, 0
     mov  textCr, WHITE
 udb_not_primary:
+
+    ; Hover (ticket 04): the pointer is over this control. The primary keeps its
+    ; accent fill, and a disabled control does not react.
+    mov  eax, [esi].DRAWITEMSTRUCT.hwndItem
+    cmp  eax, ui_hot
+    jne  udb_not_hover
+    cmp  kind, UI_KIND_BUTTON_PRIMARY
+    je   udb_not_hover
+    mov  eax, [esi].DRAWITEMSTRUCT.itemState
+    test eax, ODS_DISABLED
+    jnz  udb_not_hover
+    mov  eax, hoverCr
+    mov  fillCr, eax
+udb_not_hover:
 
     ; Pressed overrides the fill (the accent already reads as active).
     mov  eax, [esi].DRAWITEMSTRUCT.itemState
@@ -487,6 +678,14 @@ udb_layout_done:
     sub  eax, 2
     mov  h, eax
 
+    ; Focus draws its ring at inset 2 below; drop the inset-1 hairline here so a
+    ; focused control shows one ring, not a hairline inside it (which reads as a
+    ; doubled border / a second control).
+    mov  eax, [esi].DRAWITEMSTRUCT.itemState
+    test eax, ODS_FOCUS
+    jz   udb_surface_border
+    mov  borderCr, 0
+udb_surface_border:
     INVOKE ui_round_rect, gfx, x, y, w, h, UI_RADIUS, fillCr, borderCr
 
     ; An icon button's glyph (or a labelled button's leading "+") is drawn with
@@ -519,6 +718,32 @@ udb_lead_glyph:
     mov  gr.bottom, eax
     INVOKE ui_draw_icon, gfx, ICON_ADD, ADDR gr, textCr
 udb_no_glyph:
+    ; Focus ring (ticket 04): a Fluent accent ring inset by 2px, stroke-only.
+    ; On the accent-filled primary a white ring reads instead of accent-on-accent.
+    mov  eax, [esi].DRAWITEMSTRUCT.itemState
+    test eax, ODS_FOCUS
+    jz   udb_no_focus
+    mov  eax, rc.left
+    add  eax, 2
+    mov  x, eax
+    mov  eax, rc.top
+    add  eax, 2
+    mov  y, eax
+    mov  eax, rc.right
+    sub  eax, rc.left
+    sub  eax, 4
+    mov  w, eax
+    mov  eax, rc.bottom
+    sub  eax, rc.top
+    sub  eax, 4
+    mov  h, eax
+    mov  ecx, ui_accent
+    cmp  kind, UI_KIND_BUTTON_PRIMARY
+    jne  udb_focus_cr
+    mov  ecx, WHITE
+udb_focus_cr:
+    INVOKE ui_round_rect, gfx, x, y, w, h, UI_RADIUS, 0, ecx
+udb_no_focus:
     INVOKE GdipFlush, gfx, FlushIntentionSync
     INVOKE GdipDeleteGraphics, gfx
 
@@ -547,6 +772,498 @@ udb_done:
     xor  eax, eax
     ret
 ui_draw_button ENDP
+
+; ---------------------------------------------------------------------------
+; ui_draw_combo(dis) -> void. Paints one draw of an owner-draw ComboBox (ticket
+; 03): either a closed selection face (itemID == -1, ODS_COMBOBOXEDIT) or an open
+; list row. Both fill the ambient surface first, then draw the glyph and its
+; text; the face adds the Fluent surface, a hairline border, and the chevron. A
+; selected row gets the accent tint and a 3px accent bar.
+;
+; The Shell's own list rows arrive here from the parent's WM_DRAWITEM. The face
+; arrives from ui_paint_combo's synthetic DRAWITEMSTRUCT, because the base
+; ComboBox's classic border and arrow button are only removed by painting the
+; whole client ourselves.
+;
+; The face's text and glyph come from the current selection (CB_GETCURSEL ->
+; CB_GETLBTEXT/CB_GETITEMDATA); a row's glyph is DRAWITEMSTRUCT.itemData, the id
+; shell.asm stashed with CB_SETITEMDATA. The open list box's own border and
+; scrollbar stay classic - only the rows are skinned. See ADR-0004.
+; ---------------------------------------------------------------------------
+ui_draw_combo PROC USES ebx esi edi dis:DWORD
+    LOCAL gfx:DWORD
+    LOCAL ambientRole:DWORD
+    LOCAL dark:DWORD
+    LOCAL faceCr:DWORD
+    LOCAL borderCr:DWORD
+    LOCAL textCr:DWORD
+    LOCAL hoverCr:DWORD
+    LOCAL disabledCr:DWORD
+    LOCAL ambientCr:DWORD
+    LOCAL fillCr:DWORD
+    LOCAL isFace:DWORD
+    LOCAL sel:DWORD
+    LOCAL glyph:DWORD
+    LOCAL w:DWORD
+    LOCAL h:DWORD
+    LOCAL x:DWORD
+    LOCAL y:DWORD
+    LOCAL rc:RECT
+    LOCAL gr:RECT
+    LOCAL tr:RECT
+    LOCAL buf[64]:WORD
+
+    mov  esi, dis
+    mov  gfx, 0
+    mov  ambientRole, UI_AMBIENT_BG
+
+    ; rcItem -> rc.
+    mov  eax, [esi].DRAWITEMSTRUCT.rcItem.left
+    mov  rc.left, eax
+    mov  eax, [esi].DRAWITEMSTRUCT.rcItem.top
+    mov  rc.top, eax
+    mov  eax, [esi].DRAWITEMSTRUCT.rcItem.right
+    mov  rc.right, eax
+    mov  eax, [esi].DRAWITEMSTRUCT.rcItem.bottom
+    mov  rc.bottom, eax
+
+    ; Ambient from the registration; the default stands if unattached.
+    mov  eax, [esi].DRAWITEMSTRUCT.hwndItem
+    INVOKE ui_find, eax
+    cmp  eax, -1
+    je   ucc_slot_done
+    imul eax, eax, SIZEOF UiSlot
+    add  eax, OFFSET ui_slots
+    mov  ecx, [eax].UiSlot.ambient
+    mov  ambientRole, ecx
+ucc_slot_done:
+
+    INVOKE theme_is_dark
+    mov  dark, eax
+    cmp  dark, 0
+    je   ucc_light
+    mov  faceCr, COMBO_FACE_DARK
+    mov  borderCr, BORDER_DARK
+    mov  textCr, TEXT_DARK
+    mov  hoverCr, HOVER_DARK
+    mov  disabledCr, DISABLED_DARK
+    jmp  ucc_colors_done
+ucc_light:
+    mov  faceCr, COMBO_FACE_LIGHT
+    mov  borderCr, BORDER_LIGHT
+    mov  textCr, TEXT_LIGHT
+    mov  hoverCr, HOVER_LIGHT
+    mov  disabledCr, DISABLED_LIGHT
+ucc_colors_done:
+
+    ; Selection face, or a list row?
+    mov  isFace, 0
+    mov  eax, [esi].DRAWITEMSTRUCT.itemID
+    cmp  eax, 0FFFFFFFFh
+    je   ucc_face
+    test [esi].DRAWITEMSTRUCT.itemState, ODS_COMBOBOXEDIT
+    jnz  ucc_face
+    jmp  ucc_row
+
+ucc_face:
+    mov  isFace, 1
+    ; Paint the face from the control's *whole* client rect, not the field
+    ; sub-rect the ComboBox hands to a WM_DRAWITEM face draw. The field rect
+    ; excludes the drop-down arrow area, so a field-width face would leave the
+    ; arrow area showing the ui_paint_combo face beneath (and put its chevron at
+    ; a different x): the doubled drop-down. With the client rect, the WM_DRAWITEM
+    ; face and ui_paint_combo's face are identical, so whichever paints last the
+    ; result is one face and one chevron.
+    mov  eax, [esi].DRAWITEMSTRUCT.hwndItem
+    lea  ecx, rc
+    INVOKE GetClientRect, eax, ecx
+    mov  glyph, UI_GLYPH_NONE
+    mov  WORD PTR buf, 0
+    INVOKE SendMessageW, [esi].DRAWITEMSTRUCT.hwndItem, CB_GETCURSEL, 0, 0
+    mov  sel, eax
+    cmp  eax, -1
+    je   ucc_paint
+    INVOKE SendMessageW, [esi].DRAWITEMSTRUCT.hwndItem, CB_GETLBTEXT, sel, ADDR buf
+    INVOKE SendMessageW, [esi].DRAWITEMSTRUCT.hwndItem, CB_GETITEMDATA, sel, 0
+    mov  glyph, eax
+    jmp  ucc_paint
+
+ucc_row:
+    ; The row's glyph id is what CB_SETITEMDATA stashed for this index.
+    mov  eax, [esi].DRAWITEMSTRUCT.itemData
+    mov  glyph, eax
+    mov  eax, [esi].DRAWITEMSTRUCT.itemID
+    mov  sel, eax
+    INVOKE SendMessageW, [esi].DRAWITEMSTRUCT.hwndItem, CB_GETLBTEXT, sel, ADDR buf
+
+ucc_paint:
+    ; A disabled control mutes its text.
+    mov  eax, [esi].DRAWITEMSTRUCT.itemState
+    test eax, ODS_DISABLED
+    jz   ucc_not_disabled
+    mov  eax, disabledCr
+    mov  textCr, eax
+ucc_not_disabled:
+
+    ; Full-rect size.
+    mov  eax, rc.right
+    sub  eax, rc.left
+    mov  w, eax
+    mov  eax, rc.bottom
+    sub  eax, rc.top
+    mov  h, eax
+
+    INVOKE GdipCreateFromHDC, [esi].DRAWITEMSTRUCT.hDC, ADDR gfx
+    test eax, eax
+    jnz  ucc_text
+    cmp  gfx, 0
+    je   ucc_text
+    INVOKE GdipSetSmoothingMode, gfx, SmoothingModeAntiAlias
+
+    ; Ambient wash over the whole row.
+    INVOKE ui_ambient_color, ambientRole
+    mov  ambientCr, eax
+    INVOKE ui_fill_rect, gfx, rc.left, rc.top, w, h, ambientCr
+
+    cmp  isFace, 0
+    je   ucc_draw_row
+
+    ; --- the closed selection face -----------------------------------------
+    ; Hover lightens the surface; the pressed state is not delivered here.
+    mov  eax, faceCr
+    mov  edx, [esi].DRAWITEMSTRUCT.hwndItem
+    cmp  edx, ui_hot
+    jne  ucc_face_fill
+    mov  eax, hoverCr
+ucc_face_fill:
+    mov  fillCr, eax
+    ; Focus draws its ring at inset 2 below; drop the inset-1 hairline so a
+    ; focused face shows one ring, not a doubled border.
+    mov  eax, [esi].DRAWITEMSTRUCT.itemState
+    test eax, ODS_FOCUS
+    jz   ucc_face_hairline
+    mov  borderCr, 0
+ucc_face_hairline:
+    ; Rounded face, inset 1px so the hairline border is not clipped.
+    mov  eax, rc.left
+    inc  eax
+    mov  x, eax
+    mov  eax, rc.top
+    inc  eax
+    mov  y, eax
+    mov  eax, w
+    sub  eax, 2
+    mov  ecx, eax                 ; face width
+    mov  eax, h
+    sub  eax, 2                   ; face height
+    INVOKE ui_round_rect, gfx, x, y, ecx, eax, UI_RADIUS, fillCr, borderCr
+
+    ; The selected row's glyph, on the left.
+    cmp  glyph, UI_GLYPH_NONE
+    je   ucc_face_chev
+    mov  eax, rc.left
+    add  eax, 6
+    mov  gr.left, eax
+    mov  eax, rc.top
+    mov  ecx, rc.bottom
+    add  eax, ecx
+    sar  eax, 1
+    sub  eax, 8
+    mov  gr.top, eax
+    mov  eax, gr.left
+    add  eax, 16
+    mov  gr.right, eax
+    mov  eax, gr.top
+    add  eax, 16
+    mov  gr.bottom, eax
+    INVOKE ui_draw_glyph_id, gfx, glyph, ADDR gr, textCr
+
+ucc_face_chev:
+    ; The chevron, on the right.
+    mov  eax, rc.right
+    sub  eax, 20
+    mov  gr.left, eax
+    mov  eax, rc.top
+    mov  ecx, rc.bottom
+    add  eax, ecx
+    sar  eax, 1
+    sub  eax, 8
+    mov  gr.top, eax
+    mov  eax, gr.left
+    add  eax, 16
+    mov  gr.right, eax
+    mov  eax, gr.top
+    add  eax, 16
+    mov  gr.bottom, eax
+    INVOKE ui_draw_icon, gfx, ICON_CHEVRON, ADDR gr, textCr
+
+    ; Focus ring (ticket 04): a stroke-only accent ring, 2px in.
+    mov  eax, [esi].DRAWITEMSTRUCT.itemState
+    test eax, ODS_FOCUS
+    jz   ucc_flush
+    mov  eax, rc.left
+    add  eax, 2
+    mov  x, eax
+    mov  eax, rc.top
+    add  eax, 2
+    mov  y, eax
+    mov  eax, rc.right
+    sub  eax, rc.left
+    sub  eax, 4
+    mov  w, eax
+    mov  eax, rc.bottom
+    sub  eax, rc.top
+    sub  eax, 4
+    mov  h, eax
+    INVOKE ui_round_rect, gfx, x, y, w, h, UI_RADIUS, 0, ui_accent
+    jmp  ucc_flush
+
+ucc_draw_row:
+    ; --- a list row ---------------------------------------------------------
+    mov  eax, [esi].DRAWITEMSTRUCT.itemState
+    test eax, ODS_SELECTED
+    jz   ucc_row_glyph
+    ; Accent-tinted fill, then a 3px accent bar inset vertically by 4px.
+    INVOKE ui_tint, ui_accent, ambientCr, SEL_MIX
+    mov  edx, eax
+    INVOKE ui_fill_rect, gfx, rc.left, rc.top, w, h, edx
+    mov  eax, rc.left
+    add  eax, 2
+    mov  ecx, rc.top
+    add  ecx, 4
+    mov  edx, h
+    sub  edx, 8
+    INVOKE ui_fill_rect, gfx, eax, ecx, 3, edx, ui_accent
+
+ucc_row_glyph:
+    cmp  glyph, UI_GLYPH_NONE
+    je   ucc_flush
+    mov  eax, rc.left
+    add  eax, 8
+    mov  gr.left, eax
+    mov  eax, rc.top
+    mov  ecx, rc.bottom
+    add  eax, ecx
+    sar  eax, 1
+    sub  eax, 8
+    mov  gr.top, eax
+    mov  eax, gr.left
+    add  eax, 16
+    mov  gr.right, eax
+    mov  eax, gr.top
+    add  eax, 16
+    mov  gr.bottom, eax
+    INVOKE ui_draw_glyph_id, gfx, glyph, ADDR gr, textCr
+
+ucc_flush:
+    INVOKE GdipFlush, gfx, FlushIntentionSync
+    INVOKE GdipDeleteGraphics, gfx
+
+ucc_text:
+    ; Text with GDI for ClearType, inset past the glyph and (on the face) before
+    ; the chevron.
+    INVOKE SetBkMode, [esi].DRAWITEMSTRUCT.hDC, TRANSPARENT_BK
+    INVOKE SetTextColor, [esi].DRAWITEMSTRUCT.hDC, textCr
+    cmp  ui_font_gdi, 0
+    je   ucc_fmt
+    INVOKE SelectObject, [esi].DRAWITEMSTRUCT.hDC, ui_font_gdi
+ucc_fmt:
+    mov  eax, rc.left
+    mov  tr.left, eax
+    mov  eax, rc.right
+    mov  tr.right, eax
+    mov  eax, rc.top
+    mov  tr.top, eax
+    mov  eax, rc.bottom
+    mov  tr.bottom, eax
+    add  tr.left, 6
+    cmp  glyph, UI_GLYPH_NONE
+    je   ucc_text_face
+    add  tr.left, 18               ; past the 16px glyph and its gap
+ucc_text_face:
+    cmp  isFace, 0
+    je   ucc_text_draw
+    sub  tr.right, 22              ; leave room for the chevron
+ucc_text_draw:
+    INVOKE DrawTextW, [esi].DRAWITEMSTRUCT.hDC, ADDR buf, -1, ADDR tr, DT_LEFT OR DT_VCENTER OR DT_SINGLELINE
+    xor  eax, eax
+    ret
+ui_draw_combo ENDP
+
+; ---------------------------------------------------------------------------
+; ui_paint_combo(hwnd) -> void. Paints a drop-down's closed face, in place of the
+; ComboBox's own rendering. The base control draws a classic 3-D border (a grey
+; edge on the top/left of the client) and a drop-down arrow button that
+; owner-draw's rcItem never covers; taking the whole paint ourselves removes both.
+; A synthetic DRAWITEMSTRUCT (itemID == -1, the selection field, focused when the
+; control has focus) reuses ui_draw_combo, so all the face drawing stays in one
+; place. Called from ui_subclass_proc's WM_PAINT.
+; ---------------------------------------------------------------------------
+ui_paint_combo PROC USES esi hwnd:DWORD
+    LOCAL ps:PAINTSTRUCT
+    LOCAL dis:DRAWITEMSTRUCT
+
+    INVOKE BeginPaint, hwnd, ADDR ps
+    mov  esi, eax                     ; hDC
+    test esi, esi
+    jz   upc_done
+
+    mov  dis.CtlType, ODT_COMBOBOX
+    mov  dis.CtlID, 0
+    mov  dis.itemID, 0FFFFFFFFh        ; the selection field
+    mov  dis.itemAction, 0
+    mov  dis.itemState, 0
+    INVOKE GetFocus
+    cmp  eax, hwnd
+    jne  upc_nofocus
+    mov  dis.itemState, ODS_FOCUS
+upc_nofocus:
+    mov  eax, hwnd
+    mov  dis.hwndItem, eax
+    mov  dis.hDC, esi
+    lea  eax, dis.rcItem
+    INVOKE GetClientRect, hwnd, eax
+    mov  dis.itemData, 0
+
+    INVOKE ui_draw_combo, ADDR dis
+    INVOKE EndPaint, hwnd, ADDR ps
+upc_done:
+    ret
+ui_paint_combo ENDP
+
+; ---------------------------------------------------------------------------
+; ui_tint(accent, base, pct) -> COLORREF. base blended pct percent toward accent,
+; channel by channel. Draws the selected-row surface so it follows the user's
+; accent without a second hardcoded palette.
+; ---------------------------------------------------------------------------
+ui_tint PROC USES ebx esi edi accent:DWORD, base:DWORD, pct:DWORD
+    LOCAL b:DWORD
+
+    xor  ebx, ebx                  ; result
+    xor  esi, esi                  ; channel shift: 0, 8, 16
+    mov  edi, 3
+ut_loop:
+    mov  eax, accent
+    mov  ecx, esi
+    shr  eax, cl
+    and  eax, 0FFh                 ; accent channel
+    mov  edx, base
+    shr  edx, cl
+    and  edx, 0FFh                 ; base channel
+    mov  b, edx
+    sub  eax, edx                  ; a - b
+    imul eax, pct
+    cdq
+    mov  ecx, 100
+    idiv ecx                       ; (a - b) * pct / 100
+    add  eax, b
+    test eax, eax
+    jns  ut_hi
+    xor  eax, eax                  ; clamp below 0
+ut_hi:
+    cmp  eax, 0FFh
+    jle  ut_put
+    mov  eax, 0FFh                 ; clamp above 255
+ut_put:
+    mov  ecx, esi
+    shl  eax, cl
+    or   ebx, eax
+    add  esi, 8
+    dec  edi
+    jnz  ut_loop
+    mov  eax, ebx
+    ret
+ui_tint ENDP
+
+; ---------------------------------------------------------------------------
+; ui_draw_glyph_id(gfx, id, prc, cr) -> void. Draws the drop-down glyph for a
+; UI_GLYPH_* id, centred on prc, in cr: the Shell's mode icons and the Delay
+; clock as vectors on a 16x16 grid. Unlike ui_draw_icon it never uses the icon
+; font - these shapes have no codepoint - so it is always available.
+; ---------------------------------------------------------------------------
+ui_draw_glyph_id PROC USES ebx esi edi gfx:DWORD, id:DWORD, prc:DWORD, cr:DWORD
+    LOCAL pen:DWORD
+    LOCAL argb:DWORD
+    LOCAL ox:DWORD
+    LOCAL oy:DWORD
+    LOCAL ex:DWORD
+    LOCAL ey:DWORD
+
+    mov  pen, 0
+    cmp  gfx, 0
+    je   ugd_done
+    cmp  id, UI_GLYPH_NONE
+    je   ugd_done
+
+    ; ox/oy place the 16x16 grid's top-left at the cell centre minus 8.
+    mov  esi, prc
+    mov  eax, [esi].RECT.left
+    add  eax, [esi].RECT.right
+    sar  eax, 1
+    sub  eax, 8
+    mov  ox, eax
+    mov  eax, [esi].RECT.top
+    add  eax, [esi].RECT.bottom
+    sar  eax, 1
+    sub  eax, 8
+    mov  oy, eax
+
+    INVOKE ui_argb, cr
+    mov  argb, eax
+    INVOKE GdipCreatePen1, argb, PEN_W_ICON, UnitPixel, ADDR pen
+    test eax, eax
+    jnz  ugd_done
+    cmp  pen, 0
+    je   ugd_done
+    INVOKE GdipSetPenStartCap, pen, LineCapRound
+    INVOKE GdipSetPenEndCap, pen, LineCapRound
+    INVOKE GdipSetPenLineJoin, pen, LineJoinRound
+
+    mov  eax, id
+    cmp  eax, UI_GLYPH_RECT
+    je   ugd_rect
+    cmp  eax, UI_GLYPH_WINDOW
+    je   ugd_win
+    cmp  eax, UI_GLYPH_FULL
+    je   ugd_full
+    cmp  eax, UI_GLYPH_FREE
+    je   ugd_free
+    cmp  eax, UI_GLYPH_CLOCK
+    je   ugd_clock
+    jmp  ugd_cleanup
+
+ugd_rect:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_rect, 5, ox, oy
+    jmp  ugd_cleanup
+ugd_win:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_win_a, 5, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_win_b, 2, ox, oy
+    jmp  ugd_cleanup
+ugd_full:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_full_1, 3, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_full_2, 3, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_full_3, 3, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_full_4, 3, ox, oy
+    jmp  ugd_cleanup
+ugd_free:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_free, 7, ox, oy
+    jmp  ugd_cleanup
+ugd_clock:
+    mov  eax, ox
+    add  eax, 2
+    mov  ex, eax
+    mov  eax, oy
+    add  eax, 2
+    mov  ey, eax
+    INVOKE GdipDrawEllipseI, gfx, pen, ex, ey, 12, 12
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_hand_v, 2, ox, oy
+    INVOKE ui_draw_poly, gfx, pen, OFFSET gl_hand_h, 2, ox, oy
+
+ugd_cleanup:
+    INVOKE GdipDeletePen, pen
+ugd_done:
+    ret
+ui_draw_glyph_id ENDP
 
 ; ---------------------------------------------------------------------------
 ; ui_load_icon_font() -> void. Builds ui_iconfont from a Segoe Fluent Icons .ttf
@@ -747,6 +1464,8 @@ udi_vectors:
     je   udi_er
     cmp  eax, ICON_UNDO
     je   udi_undo
+    cmp  eax, ICON_CHEVRON
+    je   udi_chev
     jmp  udi_cleanup
 
 udi_save:
@@ -771,6 +1490,9 @@ udi_er:
 udi_undo:
     INVOKE ui_draw_poly, gfx, pen, OFFSET ic_undo_a, 5, ox, oy
     INVOKE ui_draw_poly, gfx, pen, OFFSET ic_undo_b, 4, ox, oy
+    jmp  udi_cleanup
+udi_chev:
+    INVOKE ui_draw_poly, gfx, pen, OFFSET ic_chev_a, 3, ox, oy
 
 udi_cleanup:
     INVOKE GdipDeletePen, pen
@@ -916,7 +1638,9 @@ ui_round_rect PROC USES ebx esi edi gfx:DWORD, x:DWORD, y:DWORD, w:DWORD, h:DWOR
     INVOKE GdipAddPathArcI, path, x, edx, d, d, ARCF_90, ARCF_90
     INVOKE GdipClosePathFigure, path
 
-    ; Fill.
+    ; Fill (skipped when fillCr == 0, which draws a stroke-only ring).
+    cmp  fillCr, 0
+    je   urr_border
     INVOKE ui_argb, fillCr
     mov  argb, eax
     INVOKE GdipCreateSolidFill, argb, ADDR brush
@@ -927,6 +1651,7 @@ ui_round_rect PROC USES ebx esi edi gfx:DWORD, x:DWORD, y:DWORD, w:DWORD, h:DWOR
     INVOKE GdipFillPath, gfx, brush, path
 
     ; Border.
+urr_border:
     cmp  borderCr, 0
     je   urr_cleanup
     INVOKE ui_argb, borderCr

@@ -153,6 +153,18 @@ UI_KIND_BUTTON         EQU 0
 UI_KIND_BUTTON_PRIMARY EQU 1
 UI_KIND_ICON           EQU 2
 UI_KIND_BUTTON_GLYPH   EQU 3   ; a plain button with a leading "+" glyph and a label
+UI_KIND_COMBO          EQU 4   ; an owner-draw drop-down: the face and every row
+
+; The glyph a drop-down row carries. shell.asm stashes one per row with
+; CB_SETITEMDATA; ui.asm reads it from DRAWITEMSTRUCT.itemData and draws the
+; matching vector glyph. UI_GLYPH_NONE draws no glyph (the Delay rows share the
+; clock, so only mode uses the first four).
+UI_GLYPH_NONE          EQU 0
+UI_GLYPH_RECT          EQU 1
+UI_GLYPH_WINDOW        EQU 2
+UI_GLYPH_FULL          EQU 3
+UI_GLYPH_FREE          EQU 4
+UI_GLYPH_CLOCK         EQU 5
 
 ; The ambient surface a control sits on, resolved to a colour per theme at draw
 ; time: the Shell's buttons sit on the client background, the Editor's on the

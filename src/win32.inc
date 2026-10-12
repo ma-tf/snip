@@ -53,9 +53,6 @@ CloseHandle          PROTO STDCALL :DWORD
 ; ---------------------------------------------------------------------------
 SetProcessDpiAwarenessContext PROTO STDCALL :DWORD
 PostMessageW                  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
-; ticket 12: synthesise a genuine Alt+Down; a posted message cannot, because the
-; combo's syskey handler reads real keyboard state. See shell.asm.
-SendInput                     PROTO STDCALL :DWORD, :DWORD, :DWORD
 LoadCursorW                   PROTO STDCALL :DWORD, :DWORD
 RegisterClassExW              PROTO STDCALL :DWORD
 CreateWindowExW               PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD, :DWORD, :DWORD, :DWORD
@@ -73,11 +70,13 @@ GetDC                         PROTO STDCALL :DWORD
 ReleaseDC                     PROTO STDCALL :DWORD, :DWORD
 GetSystemMetrics              PROTO STDCALL :SDWORD
 InvalidateRect                PROTO STDCALL :DWORD, :DWORD, :DWORD
+TrackMouseEvent               PROTO STDCALL :DWORD   ; ticket 04: hover in/out (TRACKMOUSEEVENT*)
 RedrawWindow                  PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 SetClassLongW                 PROTO STDCALL :DWORD, :SDWORD, :DWORD   ; live theme update: swap the class background
 SetCapture                    PROTO STDCALL :DWORD
 ReleaseCapture                PROTO STDCALL
 SetFocus                      PROTO STDCALL :DWORD
+GetFocus                      PROTO STDCALL
 SetForegroundWindow           PROTO STDCALL :DWORD
 MoveWindow                    PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD
 wsprintfW                     PROTO C :DWORD, :DWORD, :VARARG
@@ -164,12 +163,13 @@ CreateFontW        PROTO STDCALL :SDWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :D
 BitBlt             PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :DWORD, :SDWORD, :SDWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
-; comctl32 - ComboBoxEx and its image list. Registered at process init.
+; comctl32 - window subclassing for the control skin (ticket 04). SetWindowSubclass
+; lets ui.asm see a control's mouse messages (hover tracking) without replacing
+; its WndProc; DefSubclassProc forwards everything else. comctl32 is already
+; linked. See docs/ui.md and ADR-0004.
 ; ---------------------------------------------------------------------------
-InitCommonControlsEx PROTO STDCALL :DWORD
-ImageList_Create     PROTO STDCALL :SDWORD, :SDWORD, :DWORD, :SDWORD, :SDWORD
-ImageList_AddMasked  PROTO STDCALL :DWORD, :DWORD, :DWORD
-ImageList_Destroy    PROTO STDCALL :DWORD
+SetWindowSubclass    PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
+DefSubclassProc      PROTO STDCALL :DWORD, :DWORD, :DWORD, :DWORD
 
 ; ---------------------------------------------------------------------------
 ; gdiplus - antialiased ink for the annotation tools (ticket 06). gdiplus.dll
@@ -196,6 +196,7 @@ GdipAddPathArcI      PROTO STDCALL :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD, :
 GdipClosePathFigure  PROTO STDCALL :DWORD
 GdipFillRectangleI   PROTO STDCALL :DWORD, :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD  ; (gfx, brush, x, y, w, h)
 GdipDrawPath         PROTO STDCALL :DWORD, :DWORD, :DWORD  ; (gfx, pen, path)
+GdipDrawEllipseI     PROTO STDCALL :DWORD, :DWORD, :SDWORD, :SDWORD, :SDWORD, :SDWORD  ; (gfx, pen, x, y, w, h) - the clock dial
 
 ; The free-form cut (ticket 07): a GraphicsPath filled antialiased into a
 ; scratch bitmap whose alpha is the coverage mask, plus image drawing for the
@@ -257,6 +258,8 @@ WS_EX_TOOLWINDOW    EQU 00000080h
 BS_PUSHBUTTON       EQU 0
 BS_OWNERDRAW        EQU 0000000Bh      ; the parent paints the button (ui.asm)
 CBS_DROPDOWNLIST    EQU 3
+CBS_OWNERDRAWFIXED  EQU 0010h          ; the parent paints every row and the face (ui.asm)
+CBS_HASSTRINGS      EQU 0200h          ; keep item text, so CB_GETLBTEXT returns it
 SS_CENTER           EQU 00000001h      ; static: centre the text horizontally
 SS_CENTERIMAGE      EQU 00000200h      ; ... and vertically, for a single line
 
@@ -282,11 +285,15 @@ WM_PAINT            EQU 000Fh
 WM_CLOSE            EQU 0010h
 WM_ERASEBKGND       EQU 0014h
 WM_SETTINGCHANGE    EQU 001Ah          ; a system setting changed; the theme arrives here
+WM_SETFOCUS         EQU 0007h          ; a control gained keyboard focus
+WM_KILLFOCUS        EQU 0008h          ; ... and lost it
+WM_NCPAINT          EQU 0085h          ; a control asks to paint its non-client frame
 WM_CTLCOLORSTATIC   EQU 0138h          ; a static asks its parent for colours
 WM_DISPLAYCHANGE    EQU 007Eh          ; a monitor was added, removed, or re-scaled
 WM_KEYDOWN          EQU 0100h
 WM_SYSKEYDOWN       EQU 0104h          ; Alt+key; what a combo opens its list on
 WM_MOUSEMOVE        EQU 0200h
+WM_MOUSELEAVE       EQU 02A3h          ; TrackMouseEvent(TME_LEAVE): the pointer left
 WM_LBUTTONDOWN      EQU 0201h
 WM_LBUTTONUP        EQU 0202h
 WM_RBUTTONUP        EQU 0205h
@@ -306,10 +313,16 @@ BM_SETSTATE         EQU 00F3h          ; show a push button in the pressed state
 ; Owner-draw (WM_DRAWITEM). CtlType picks the control kind; the ODS_* bits arrive
 ; in DRAWITEMSTRUCT.itemState and are what the skin paints from (ui.asm).
 ODT_BUTTON          EQU 4
+ODT_COMBOBOX        EQU 3
 ODS_SELECTED        EQU 0001h
 ODS_GRAYED          EQU 0002h
 ODS_DISABLED        EQU 0004h
 ODS_FOCUS           EQU 0010h
+ODS_COMBOBOXEDIT    EQU 1000h          ; the combo's selection field, not a list row
+
+; TrackMouseEvent flags (winuser.h). TME_LEAVE posts WM_MOUSELEAVE when the
+; pointer leaves the control, which is how the skin clears its hover state.
+TME_LEAVE           EQU 00000002h
 
 ; DrawTextW format flags for the button label.
 DT_LEFT             EQU 0000h
@@ -318,26 +331,18 @@ DT_VCENTER          EQU 0004h
 DT_SINGLELINE       EQU 0020h
 DT_CALCRECT         EQU 0400h          ; measure only: no output, fills the rect
 
+; ComboBox messages. A plain ComboBox now carries the drop-downs (ticket 03);
+; rows are added as strings and each row's glyph id is stashed with CB_SETITEMDATA,
+; which ui.asm reads back out of DRAWITEMSTRUCT.itemData / CB_GETITEMDATA.
+CB_ADDSTRING        EQU 0143h
 CB_GETCURSEL        EQU 0147h
+CB_GETLBTEXT        EQU 0148h
+CB_GETLBTEXTLEN     EQU 0149h
 CB_SETCURSEL        EQU 014Eh
-CB_SHOWDROPDOWN     EQU 014Fh           ; NOT honoured by ComboBoxEx32; see shell.asm
-
-; ComboBoxEx (comctl32). CBEM_* are WM_USER-relative; ICC registers the class.
-WM_USER             EQU 0400h
-ICC_USEREX_CLASSES  EQU 0200h
-CBEM_SETIMAGELIST   EQU WM_USER + 2
-
-; CBEM_INSERTITEMW is the wide variant (WM_USER + 11).
-CBEM_INSERTITEMW    EQU WM_USER + 11
-CBEIF_TEXT          EQU 00000001h
-CBEIF_IMAGE         EQU 00000002h
-CBEIF_SELECTEDIMAGE EQU 00000004h
-
-; Image list: 24-bit colour with a mask. ComboBoxEx draws the list opaquely, so
-; a 32-bit list's alpha is ignored; the colour-key mask is what makes the glyph
-; background transparent. See shell.asm.
-ILC_COLOR24         EQU 18h
-ILC_MASK            EQU 00000001h
+CB_SHOWDROPDOWN     EQU 014Fh
+CB_GETITEMDATA      EQU 0150h
+CB_SETITEMDATA      EQU 0151h
+CB_SETITEMHEIGHT    EQU 0153h
 
 ; GDI drawing
 PS_SOLID            EQU 0
@@ -376,11 +381,6 @@ DWM_CLOAKED         EQU 14             ; DWMWA_CLOAKED
 GWLP_USERDATA       EQU -21
 
 VK_ESCAPE           EQU 1Bh
-VK_MENU             EQU 12h            ; Alt
-VK_DOWN             EQU 28h            ; ticket 12: Alt+Down opens a focused combo
-; SendInput (ticket 12): the input record kinds and their flags.
-INPUT_KEYBOARD      EQU 1
-KEYEVENTF_KEYUP     EQU 0002h
 
 ; ticket 12: ACCEL fVirt flags (winuser.h) and the ids IsDialogMessageW emits
 ; for Enter and Escape. IDOK/IDCANCEL are deliberately ignored by both WndProcs
@@ -525,40 +525,15 @@ ACCEL STRUCT
 ACCEL ENDS                             ; sizeof == 6
 .ERRNZ SIZEOF ACCEL - 6
 
-; KEYBDINPUT / MOUSEINPUT / HARDWAREINPUT and the INPUT union (winuser.h) on x86.
-; INPUT is 28 bytes: a 4-byte type, then the 24-byte widest member (MOUSEINPUT),
-; so the union is sized by MOUSEINPUT and KEYBDINPUT sits inside it. Only the
-; keyboard member is used (ticket 12), but all three are declared so SIZEOF INPUT
-; is the API's 28 rather than an under-sized guess.
-KEYBDINPUT STRUCT
-    wVk         WORD ?
-    wScan       WORD ?
+; TRACKMOUSEEVENT (winuser.h) on x86: four DWORDs == 16 bytes. Passed to
+; TrackMouseEvent(TME_LEAVE) so the skin is told when the pointer leaves a
+; control and can clear its hover state.
+TRACKMOUSEEVENT STRUCT
+    cbSize      DWORD ?
     dwFlags     DWORD ?
-    time        DWORD ?
-    dwExtraInfo DWORD ?
-KEYBDINPUT ENDS                        ; sizeof == 16
-
-MOUSEINPUT STRUCT
-    _dx         SDWORD ?                ; `dx` is a register name; MASM rejects it
-    _dy         SDWORD ?
-    mouseData   DWORD ?
-    dwFlags     DWORD ?
-    time        DWORD ?
-    dwExtraInfo DWORD ?
-MOUSEINPUT ENDS                        ; sizeof == 24
-
-HARDWAREINPUT STRUCT
-    uMsg        DWORD ?
-    wParamL     WORD ?
-    wParamH     WORD ?
-HARDWAREINPUT ENDS                     ; sizeof == 8
-
-INPUT STRUCT
-    type_       DWORD ?                ; `type` is a MASM reserved word's cousin
-    ki          KEYBDINPUT <>
-    pad         BYTE (24 - SIZEOF KEYBDINPUT) DUP(?)   ; fill the union to MOUSEINPUT
-INPUT ENDS                             ; sizeof == 28
-.ERRNZ SIZEOF INPUT - 28
+    hwndTrack   DWORD ?
+    dwHoverTime DWORD ?
+TRACKMOUSEEVENT ENDS                   ; sizeof == 16
 
 BITMAPINFOHEADER STRUCT
     biSize          DWORD ?
@@ -573,26 +548,6 @@ BITMAPINFOHEADER STRUCT
     biClrUsed       DWORD ?
     biClrImportant  DWORD ?
 BITMAPINFOHEADER ENDS                  ; sizeof == 40
-
-INITCOMMONCONTROLSEX STRUCT
-    dwSize   DWORD ?
-    dwICC    DWORD ?
-INITCOMMONCONTROLSEX ENDS              ; sizeof == 8
-
-; x86 layout: every field is pointer- or INT-sized (4 bytes), so there is no
-; padding and sizeof == 36. On x64 iItem (INT_PTR) forced 8-byte alignment and
-; sizeof was 56. (The field is fMask, not mask: MASK is a MASM operator.)
-COMBOBOXEXITEMW STRUCT
-    fMask           DWORD ?
-    iItem           DWORD ?
-    pszText         DWORD ?
-    cchTextMax      DWORD ?
-    iImage          DWORD ?
-    iSelectedImage  DWORD ?
-    iOverlay        DWORD ?
-    iIndent         DWORD ?
-    lParam          DWORD ?
-COMBOBOXEXITEMW ENDS                   ; sizeof == 36
 
 PAINTSTRUCT STRUCT
     hdc         DWORD ?
