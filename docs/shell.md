@@ -5,38 +5,43 @@ Follows the template in [`docs/architecture.md`](architecture.md).
 
 ## What it is
 
-One small top-level window titled *Snipping Tool* holding three stock controls: a New button
-and two drop-downs (the snip mode and the delay). Each drop-down row carries a 16×16 icon.
-Either drop-down records its choice in `App`; New starts a Snipping session. The window is
-resizable — the controls stay fixed at the top and the space below them carries a centred hint
-advertising `Alt+N`. The Shell is a singleton, so its window class and its one piece of chrome
-state live in the module.
+One small top-level window titled *Snipping Tool* holding three controls: a New button and two
+drop-downs (the snip mode and the delay). The drop-downs are owner-drawn: the closed face is
+icon-only — the current selection's 16×16 glyph and a chevron — while each open row shows its
+glyph beside its label. Either drop-down records its choice in `App`; New starts a Snipping
+session. The window is resizable — the controls stay fixed at the top and the space below them
+carries a centred hint advertising `Alt+N`. The Shell is a singleton, so its window class and its
+one piece of chrome state live in the module.
 
 ## Where it lives
 
-`src/shell.asm`. It owns the Shell window class, its `WndProc`, the controls, and the icon
-image list. Strings and glyph geometry sit in `.const`; the image-list handle sits in `.data?`.
-The control IDs come from `src/snip.inc`; every Win32 binding it uses is in `src/win32.inc`.
+`src/shell.asm`. It owns the Shell window class, its `WndProc`, and the controls. Strings and
+glyph ids sit in `.const`; the hint's handle and the last-drawn theme flag sit in `.data?`.
+The control IDs come from `src/snip.inc`; every Win32 binding it uses is in `src/win32.inc`, and
+the controls' look is painted by `src/ui.asm` (see
+[ADR-0004](adr/0004-owner-draw-fluent-controls.md)).
 
 ## How it works
 
-**Stock controls, one exception.** The New button is a plain `BUTTON`; the two drop-downs are
-`ComboBoxEx32` (a common control) rather than `ComboBox`, because ComboBoxEx can show an image
-beside each item. The class is registered at process init in `snip.asm` with
-`InitCommonControlsEx(ICC_USEREX_CLASSES)`.
+**Owner-drawn controls.** The New button is a plain `BUTTON` with `BS_OWNERDRAW`; the two
+drop-downs are a plain `ComboBox` with `CBS_OWNERDRAWFIXED | CBS_DROPDOWNLIST`. `shell_on_create`
+attaches each to the skin with `ui_attach`, and the parent's `WM_DRAWITEM` routes to
+`ui_draw_item` in `src/ui.asm`, which paints the Windows 11 Fluent look. This is what lets the
+controls go dark on a dark system without a comctl32 v6 manifest; see
+[ADR-0004](adr/0004-owner-draw-fluent-controls.md).
 
-**The window follows the system theme; the controls do not.** `shell_on_create` calls
-`theme_apply` for the rounded frame and the themed title bar, and the class background and the
-hint colour come from `theme.asm`'s palette (`theme_bg_brush`, `theme_hint_color`), so the client
-and the hint go dark on a dark system. The three stock controls stay light in both themes: a dark
-common control needs comctl32 v6, which needs a startup manifest the build cannot ship. See
-[`docs/theme.md`](theme.md) and [ADR-0003](adr/0003-theme-chrome-only.md).
+**The window and its controls follow the system theme.** `shell_on_create` calls `theme_apply`
+for the rounded frame and the themed title bar, and the class background and the hint colour come
+from `theme.asm`'s palette (`theme_bg_brush`, `theme_hint_color`). The controls are painted by
+`ui.asm`, which reads `theme_is_dark` at draw time, so they go dark with the rest of the window.
+See [`docs/theme.md`](theme.md).
 
-**Icons are drawn, not loaded.** There is no `.rsrc` section and no resource compiler.
-`shell_make_icons` builds one 16×16, 24-bit masked `HIMAGELIST` and draws the five glyphs —
-rectangle, window, full-screen brackets, freeform squiggle, clock — with GDI into a scratch
-32-bpp DIB section. `shell_combo_item` inserts each row with `CBEM_INSERTITEM` and an image
-index. Both drop-downs share the one list, destroyed in `WM_DESTROY`.
+**The face is icon-only; the rows are not.** The closed face (the selection field) carries the
+current selection's 16×16 glyph and a chevron and no label, matching the Win11 Snipping Tool;
+each open row carries its glyph and its label. The face is narrower (`COMBO_FACE_W`, 52px) than
+the open list (`COMBO_DROP_W`, 150px): `CB_SETDROPPEDWIDTH` widens the pop-up so the labels
+still fit. `shell_combo_add` tags each row with a `UI_GLYPH_*` id through `CB_SETITEMDATA`, and
+`ui.asm` draws the glyphs as vector paths — there is no `.rsrc` section and no resource compiler.
 
 **State.** `CBN_SELCHANGE` arrives as `WM_COMMAND`; the index is read with `CB_GETCURSEL` and
 stored in `App.mode` or `App.delay`.
@@ -52,27 +57,24 @@ is an addition beyond the Win11 reference — it advertises the `Alt+N` accelera
 
 ## Gotchas
 
-- **A bitmap lives in one DC at a time.** The scratch DIB is selected into a memory DC while
-  it is drawn. `ImageList_AddMasked` selects it into its own DC, so the DIB must be taken back
-  out first — `smi_publish` is bracketed by `SelectObject`s for exactly this reason. Leave it
-  in and `ImageList_AddMasked` copies black.
-- **ComboBoxEx draws its image list opaquely.** A 32-bpp list's alpha channel is ignored, so
-  transparency comes from a *masked* list (`ILC_COLOR24 | ILC_MASK`) with the background drawn
-  in a colour key (`ICON_COLORKEY`, magenta) that never appears in a glyph.
-- **Order matters.** `CBEM_SETIMAGELIST` must run before the items are inserted, and the
-  image-list handle must outlive the controls (destroy it in `WM_DESTROY`, not before).
-- **`fMask`, not `mask`.** `MASK` is a MASM operator, so the `COMBOBOXEXITEMW` field is renamed.
-- **Colour values.** GDI takes `COLORREF` (`0x00BBGGRR`) and the DIB memory is little-endian
-  BGRA. Magenta is symmetric, so the key is `0x00FF00FF` either way.
+- **The face is painted by the skin, not the ComboBox.** The base control draws a classic 3-D
+  border and a drop-down arrow button that owner-draw's `rcItem` never covers. `ui_paint_combo`
+  (in `ui.asm`) takes the whole `WM_PAINT` for a combo, so the control never draws its face;
+  `WM_NCPAINT` is suppressed for the same reason.
+- **A narrower closed face needs a wider pop-up.** `CB_SETDROPPEDWIDTH` (`0x0160`) widens only
+  the open list. Without it the list would be as narrow as the face and clip the labels.
+- **A plain `ComboBox` needs `CBS_HASSTRINGS`.** With `CBS_OWNERDRAWFIXED` and no
+  `CBS_HASSTRINGS`, `CB_ADDSTRING`'s pointer becomes the item *data* and `CB_GETLBTEXT` returns
+  nothing, so the rows would draw their glyph but no text.
 - **A Static paints its own background.** A `Static` control fills its client from the brush its
   parent returns to `WM_CTLCOLORSTATIC`, and the default is the button face — which would draw a
   grey block over the window. Returning `NULL_BRUSH` with `TRANSPARENT` text mode lets the
   Shell's background show through. Do **not** add `WS_CLIPCHILDREN` to the Shell without changing
   this: it would stop the parent painting under the static, leaving the hint's area unpainted.
-- **The New button and the two drop-downs stay light on a dark system.** They are comctl32 v5
-  controls, and a dark control needs v6 — which needs a startup manifest the build cannot ship.
-  The window frame, client, and hint go dark; the controls do not. Do not try to fix this with
-  `SetWindowTheme`; see [`docs/theme.md`](theme.md) and [ADR-0003](adr/0003-theme-chrome-only.md).
+- **The controls go dark because the skin paints them, not because a theme is set.** They are
+  ordinary comctl32 v5 controls; a dark *stock* control would need v6 and a startup manifest the
+  build cannot ship, so `ui.asm` draws the pixels instead. See
+  [ADR-0004](adr/0004-owner-draw-fluent-controls.md).
 
 ## See also
 
@@ -81,6 +83,8 @@ is an addition beyond the Win11 reference — it advertises the `Alt+N` accelera
 - [`docs/build.md`](build.md) — the build loop and why `comctl32.lib` is linked.
 - [`docs/keyboard.md`](keyboard.md) — `Alt+N`, `Alt+M`, and `Alt+D` and how they reach the controls.
 - `.scratch/asm-snip-build/issues/15-shell-dropdown-icons.md` — the change that added icons.
+- `.scratch/fluent-controls/issues/07-icon-only-combo-face.md` — the change that made the closed
+  face icon-only and narrowed it.
 - `.scratch/asm-snip-build/issues/18-shell-resize-hint.md` — the change that made the Shell
   resizable and added the hint.
 - `.scratch/asm-snip-build/issues/19-system-theme-chrome.md` — the change that added the theme.

@@ -4,8 +4,9 @@
 ; A New button and two drop-downs (mode and Delay). Both controls are
 ; owner-drawn by ui.asm (ADR-0004): the buttons carry BS_OWNERDRAW and the
 ; drop-downs are plain ComboBox controls with CBS_OWNERDRAWFIXED, so they take
-; the Fluent look and go dark on a dark system. Each row carries a 16x16 glyph
-; that ui.asm draws directly - no image list and no icon resources, so no .rsrc
+; the Fluent look and go dark on a dark system. Each open row carries a 16x16
+; glyph and its label; the closed face is icon-only (ticket 07). The glyphs are
+; drawn by ui.asm directly - no image list and no icon resources, so no .rsrc
 ; section and no resource compiler. shell.asm tags each row with a UI_GLYPH_* id
 ; through CB_SETITEMDATA. Either drop-down records its choice in App; New starts
 ; a Snipping session through select.asm.
@@ -66,9 +67,15 @@ delay_10      DW '1','0',' ','s','e','c','o','n','d','s',0
 ; is the *whole* dropped-down control, so COMBO_DROP_H counts the face's visible
 ; height (COMBO_FACE_VIS, which matches the New button) plus the list. The list
 ; area is four rows tall with a hair of padding and no scrollbar.
+;
+; The closed face is icon-only (ticket 07), so it is only glyph-and-chevron wide
+; (COMBO_FACE_W); the open list stays wide enough for the labels (COMBO_DROP_W),
+; which CB_SETDROPPEDWIDTH applies to the popup alone.
 COMBO_FACE_H   EQU 22           ; the selection-field item height
 COMBO_FACE_VIS EQU 28           ; the face's visible height (item height + border)
+COMBO_FACE_W   EQU 52           ; the closed face: the glyph, a gap, and the chevron
 COMBO_ROW_H    EQU 28
+COMBO_DROP_W   EQU 150          ; the open list: room for the glyph and its label
 COMBO_DROP_H   EQU COMBO_FACE_VIS + COMBO_ROW_H*4 + 4
 
 .data?
@@ -371,16 +378,19 @@ shell_on_create PROC USES ebx esi hwnd:DWORD, app:DWORD
     mov  hCtl, eax
     INVOKE ui_attach, hCtl, UI_KIND_BUTTON_GLYPH, UI_AMBIENT_BG
 
-    ; --- mode drop-down: 84,12 150xCOMBO_DROP_H, id IDC_MODE -----------------
+    ; --- mode drop-down: 84,12 COMBO_FACE_W x COMBO_DROP_H, id IDC_MODE ------
     ; A plain ComboBox with CBS_OWNERDRAWFIXED: ui.asm paints the face and every
     ; row. WM_SETFONT and CB_SETITEMHEIGHT fix the row and face heights before
     ; the rows are added; each row's glyph id is stashed with CB_SETITEMDATA.
+    ; The face is icon-only (ticket 07), so the control is only COMBO_FACE_W wide;
+    ; CB_SETDROPPEDWIDTH widens the popup to COMBO_DROP_W so the labels still fit.
     mov  edx, [esi].App.hInstance
-    INVOKE CreateWindowExW, 0, OFFSET cls_combo, 0, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR CBS_DROPDOWNLIST OR CBS_OWNERDRAWFIXED OR CBS_HASSTRINGS, 84, 12, 150, COMBO_DROP_H, ebx, IDC_MODE, edx, 0
+    INVOKE CreateWindowExW, 0, OFFSET cls_combo, 0, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR CBS_DROPDOWNLIST OR CBS_OWNERDRAWFIXED OR CBS_HASSTRINGS, 84, 12, COMBO_FACE_W, COMBO_DROP_H, ebx, IDC_MODE, edx, 0
     mov  hCtl, eax
     INVOKE SendMessageW, hCtl, WM_SETFONT, font, 1
     INVOKE SendMessageW, hCtl, CB_SETITEMHEIGHT, -1, COMBO_FACE_H
     INVOKE SendMessageW, hCtl, CB_SETITEMHEIGHT, 0, COMBO_ROW_H
+    INVOKE SendMessageW, hCtl, CB_SETDROPPEDWIDTH, COMBO_DROP_W, 0
     INVOKE ui_attach, hCtl, UI_KIND_COMBO, UI_AMBIENT_BG
     INVOKE shell_combo_add, hCtl, OFFSET mode_rect, UI_GLYPH_RECT
     INVOKE shell_combo_add, hCtl, OFFSET mode_win, UI_GLYPH_WINDOW
@@ -388,13 +398,14 @@ shell_on_create PROC USES ebx esi hwnd:DWORD, app:DWORD
     INVOKE shell_combo_add, hCtl, OFFSET mode_free, UI_GLYPH_FREE
     INVOKE SendMessageW, hCtl, CB_SETCURSEL, 0, 0
 
-    ; --- Delay drop-down: 242,12 150xCOMBO_DROP_H, id IDC_DELAY --------------
+    ; --- Delay drop-down: 144,12 COMBO_FACE_W x COMBO_DROP_H, id IDC_DELAY ----
     mov  edx, [esi].App.hInstance
-    INVOKE CreateWindowExW, 0, OFFSET cls_combo, 0, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR CBS_DROPDOWNLIST OR CBS_OWNERDRAWFIXED OR CBS_HASSTRINGS, 242, 12, 150, COMBO_DROP_H, ebx, IDC_DELAY, edx, 0
+    INVOKE CreateWindowExW, 0, OFFSET cls_combo, 0, WS_CHILD OR WS_VISIBLE OR WS_TABSTOP OR CBS_DROPDOWNLIST OR CBS_OWNERDRAWFIXED OR CBS_HASSTRINGS, 144, 12, COMBO_FACE_W, COMBO_DROP_H, ebx, IDC_DELAY, edx, 0
     mov  hCtl, eax
     INVOKE SendMessageW, hCtl, WM_SETFONT, font, 1
     INVOKE SendMessageW, hCtl, CB_SETITEMHEIGHT, -1, COMBO_FACE_H
     INVOKE SendMessageW, hCtl, CB_SETITEMHEIGHT, 0, COMBO_ROW_H
+    INVOKE SendMessageW, hCtl, CB_SETDROPPEDWIDTH, COMBO_DROP_W, 0
     INVOKE ui_attach, hCtl, UI_KIND_COMBO, UI_AMBIENT_BG
     INVOKE shell_combo_add, hCtl, OFFSET delay_none, UI_GLYPH_CLOCK
     INVOKE shell_combo_add, hCtl, OFFSET delay_3, UI_GLYPH_CLOCK

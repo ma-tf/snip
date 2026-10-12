@@ -343,6 +343,7 @@ CB_SHOWDROPDOWN     EQU 014Fh
 CB_GETITEMDATA      EQU 0150h
 CB_SETITEMDATA      EQU 0151h
 CB_SETITEMHEIGHT    EQU 0153h
+CB_SETDROPPEDWIDTH  EQU 0160h          ; widens the open list past the narrow face (ticket 07)
 
 ; GDI drawing
 PS_SOLID            EQU 0

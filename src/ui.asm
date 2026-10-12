@@ -776,9 +776,10 @@ ui_draw_button ENDP
 ; ---------------------------------------------------------------------------
 ; ui_draw_combo(dis) -> void. Paints one draw of an owner-draw ComboBox (ticket
 ; 03): either a closed selection face (itemID == -1, ODS_COMBOBOXEDIT) or an open
-; list row. Both fill the ambient surface first, then draw the glyph and its
-; text; the face adds the Fluent surface, a hairline border, and the chevron. A
-; selected row gets the accent tint and a 3px accent bar.
+; list row. Both fill the ambient surface first, then draw the glyph; the face
+; adds the Fluent surface, a hairline border, and the chevron, and is icon-only
+; (ticket 07), while a row also draws its text. A selected row gets the accent
+; tint and a 3px accent bar.
 ;
 ; The Shell's own list rows arrive here from the parent's WM_DRAWITEM. The face
 ; arrives from ui_paint_combo's synthetic DRAWITEMSTRUCT, because the base
@@ -802,6 +803,7 @@ ui_draw_combo PROC USES ebx esi edi dis:DWORD
     LOCAL ambientCr:DWORD
     LOCAL fillCr:DWORD
     LOCAL isFace:DWORD
+    LOCAL facePainted:DWORD
     LOCAL sel:DWORD
     LOCAL glyph:DWORD
     LOCAL w:DWORD
@@ -816,6 +818,7 @@ ui_draw_combo PROC USES ebx esi edi dis:DWORD
     mov  esi, dis
     mov  gfx, 0
     mov  ambientRole, UI_AMBIENT_BG
+    mov  facePainted, 0
 
     ; rcItem -> rc.
     mov  eax, [esi].DRAWITEMSTRUCT.rcItem.left
@@ -1058,8 +1061,19 @@ ucc_row_glyph:
 ucc_flush:
     INVOKE GdipFlush, gfx, FlushIntentionSync
     INVOKE GdipDeleteGraphics, gfx
+    mov  facePainted, 1           ; GDI+ painted this draw; see ucc_text
 
 ucc_text:
+    ; The closed face is icon-only (ticket 07): the glyph and chevron name the
+    ; selection, matching the Win11 Snipping Tool, so the label is dropped. If
+    ; GDI+ never drew the face, keep the label so the control is never blank -
+    ; the same best-effort fallback the rest of the skin uses.
+    cmp  isFace, 0
+    je   ucc_text_label
+    cmp  facePainted, 0
+    jne  ucc_text_done
+
+ucc_text_label:
     ; Text with GDI for ClearType, inset past the glyph and (on the face) before
     ; the chevron.
     INVOKE SetBkMode, [esi].DRAWITEMSTRUCT.hDC, TRANSPARENT_BK
@@ -1086,6 +1100,7 @@ ucc_text_face:
     sub  tr.right, 22              ; leave room for the chevron
 ucc_text_draw:
     INVOKE DrawTextW, [esi].DRAWITEMSTRUCT.hDC, ADDR buf, -1, ADDR tr, DT_LEFT OR DT_VCENTER OR DT_SINGLELINE
+ucc_text_done:
     xor  eax, eax
     ret
 ui_draw_combo ENDP
